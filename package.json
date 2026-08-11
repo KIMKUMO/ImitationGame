@@ -1,0 +1,16 @@
+{
+  "name": "imitation-game",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "이미테이션 게임 — 예/아니오 질문으로 상대의 정체를 알아맞히는 심리 추리 대결 (M1 로컬 프로토타입)",
+  "scripts": {
+    "validate": "node data/validate-deck.js",
+    "test:engine": "node scripts/test-engine.js",
+    "test": "npm run validate && npm run test:engine",
+    "start": "node scripts/serve.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

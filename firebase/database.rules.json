@@ -1,0 +1,56 @@
+{
+  "rules": {
+    "rooms": {
+      "$roomId": {
+        "meta": {
+          ".read": "auth != null",
+          ".write": "auth.uid === data.child('hostUid').val() || !data.exists()"
+        },
+        "turn": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        },
+        "players": {
+          ".read": "auth != null",
+          "$uid": {
+            ".write": "auth.uid === $uid"
+          }
+        },
+        "secret": {
+          "$uid": {
+            ".read": "auth.uid === $uid",
+            ".write": "auth.uid === $uid && !data.exists()"
+          }
+        },
+        "deck": {
+          "taken": {
+            "$cardId": {
+              ".read": false,
+              ".write": "auth != null && !data.exists()",
+              ".validate": "newData.val() === true"
+            }
+          }
+        },
+        "log": {
+          ".read": "auth != null",
+          "$seq": {
+            ".write": "!data.exists()",
+            "line": {
+              ".validate": "!newData.exists() || (newData.isString() && newData.val().length <= 40)"
+            }
+          }
+        },
+        "events": {
+          ".read": "auth != null",
+          "$seq": {
+            ".write": "!data.exists()"
+          }
+        },
+        "result": {
+          ".read": "auth != null",
+          ".write": "auth != null && !data.exists()"
+        }
+      }
+    }
+  }
+}
