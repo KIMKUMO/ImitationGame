@@ -5,6 +5,7 @@
  * 핫시트에서 상대의 카드가 새지 않게 막는 책임이 전부 여기 있다.
  */
 
+import { QUESTIONS } from '../../data/deck.js';
 import { LocalTransport } from '../net/transport.js';
 import {
   actorOf, currentPlayerId, dealCards, opponentIdOf, isGameOver,
@@ -144,8 +145,8 @@ export function createApp(root) {
     lastPhase = from;
     switch (phase) {
       case 'QUESTION_BUILD':
-        ui.form.qId = null;
         ui.form.qGroup = '키';
+        ui.form.qId = defaultQuestionOf('키');
         break;
       case 'ANSWER_PENDING':
         ui.form.coinStep = 1;
@@ -331,13 +332,25 @@ export function createApp(root) {
 
       case 'q-group':
         ui.form.qGroup = el.dataset.group;
-        ui.form.qId = null;
+        ui.form.qId = defaultQuestionOf(ui.form.qGroup);
         render();
         break;
       case 'q-pick':
         ui.form.qId = el.dataset.qid;
         render();
         break;
+      case 'q-step': {
+        // 수치 눈금자의 ◀ ▶ — 고를 수 있는 임계값 사이를 옮겨 다닌다
+        const opts = questionsOf(ui.form.qGroup);
+        const dir = Number(el.dataset.dir);
+        const i = opts.findIndex((o) => o.id === ui.form.qId);
+        const next = i < 0
+          ? (dir > 0 ? 0 : opts.length - 1)
+          : Math.min(opts.length - 1, Math.max(0, i + dir));
+        ui.form.qId = opts[next].id;
+        render();
+        break;
+      }
       case 'q-submit':
         if (ui.form.qId) {
           dispatch({ type: 'ASK', questionId: ui.form.qId, targetId: opponentIdOf(state, currentPlayerId(state)) });
@@ -440,6 +453,18 @@ export function createApp(root) {
   }
 
   return { render, startGame };
+}
+
+const questionsOf = (group) => QUESTIONS.filter((q) => q.group === group);
+
+/**
+ * 탭을 열었을 때의 기본 선택.
+ * 수치 질문은 눈금자에 값이 하나 집혀 있어야 읽히므로 첫 임계값을 미리 집어둔다.
+ * 소속·술은 선택지가 이름뿐이라 고르지 않은 상태로 시작한다.
+ */
+function defaultQuestionOf(group) {
+  const opts = questionsOf(group);
+  return opts.length > 0 && opts[0].op === 'gte' ? opts[0].id : null;
 }
 
 function loadPrefs() {

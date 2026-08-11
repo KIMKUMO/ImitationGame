@@ -342,6 +342,74 @@ export function renderBoard(state, ui) {
 
 // ── 화면 5. 질문 빌더 ─────────────────────────────────────────────────
 
+/** 임계값을 갖는 수치 질문(키·몸무게·나이)인가 */
+export const isNumericGroup = (options) => options.length > 0 && options[0].op === 'gte';
+
+/**
+ * 수치 눈금자 — 사용자가 임계값을 직접 집는다.
+ *
+ * 고를 수 있는 값이 구간 경계 두 곳뿐인 이유는 GDD D1 이다.
+ * 팜플렛에는 구간(`175–184`)만 적혀 있으므로, 경계가 아닌 값(예: 180)으로 물으면
+ * 답을 들어도 그 구간 안의 누구를 지울지 판단할 수 없다 —
+ * 후보를 논리적으로 제거할 수 없는 질문은 질문이 아니다.
+ * 그래서 눈금자는 구간 전체를 보여주되, 집을 수 있는 지점만 손잡이로 열어둔다.
+ */
+function numericPicker(options, picked, remaining) {
+  const meta = ATTR_META[options[0].attr];
+  const [lo, hi] = meta.range;
+  const total = hi + 1 - lo;                 // 눈금자가 [lo, hi] 정수 전체를 덮도록
+  const pct = (v) => ((v - lo) / total) * 100;
+  const idx = picked ? options.findIndex((o) => o.id === picked.id) : -1;
+
+  // 구간 경계로 잘린 세 토막
+  const cuts = [lo, ...options.map((o) => o.value), hi + 1];
+  const segments = meta.buckets.map((label, i) => {
+    const width = ((cuts[i + 1] - cuts[i]) / total) * 100;
+    const count = remaining.filter((c) => {
+      const v = c[meta.key];
+      return v >= cuts[i] && v < cuts[i + 1];
+    }).length;
+    const side = picked ? (cuts[i] >= picked.value ? 'yes' : 'no') : '';
+    return `
+      <div class="scale-seg${side ? ` scale-seg-${side}` : ''}" style="width:${width}%">
+        <span class="scale-seg-label">${label}</span>
+        <span class="scale-seg-count">${count}명</span>
+      </div>`;
+  }).join('');
+
+  const handles = options.map((o) => `
+    <button class="scale-handle${picked?.id === o.id ? ' scale-handle-on' : ''}"
+      style="left:${pct(o.value)}%" data-act="q-pick" data-qid="${o.id}"
+      aria-label="${o.value}${meta.unit} 에서 가르기">
+      <span class="scale-handle-flag">${o.value}</span>
+      <span class="scale-handle-stem"></span>
+    </button>`).join('');
+
+  return `
+    <div class="num-picker">
+      <div class="num-readout">
+        <button class="num-step" data-act="q-step" data-dir="-1" ${idx <= 0 ? 'disabled' : ''} aria-label="더 작은 값">◀</button>
+        <div class="num-value">
+          ${picked ? picked.value : '—'}<span class="num-unit">${esc(meta.unit)}</span>
+          <span class="num-suffix">이상</span>
+        </div>
+        <button class="num-step" data-act="q-step" data-dir="1" ${idx < 0 || idx >= options.length - 1 ? 'disabled' : ''} aria-label="더 큰 값">▶</button>
+      </div>
+
+      <div class="scale">
+        <div class="scale-track">${segments}</div>
+        <div class="scale-handles">${handles}</div>
+        <div class="scale-ends"><span>${lo}</span><span>${hi}</span></div>
+      </div>
+
+      <p class="num-why">
+        팜플렛에는 <strong>구간</strong>만 적혀 있습니다. 경계가 아닌 값으로 물으면
+        답을 들어도 그 구간 안의 누구를 지울지 알 수 없어, 집을 수 있는 지점은 두 곳입니다.
+      </p>
+    </div>`;
+}
+
+
 export function renderQuestionModal(state, ui) {
   const group = ui.form.qGroup;
   const options = QUESTIONS.filter((q) => q.group === group);
@@ -351,12 +419,15 @@ export function renderQuestionModal(state, ui) {
   const tabs = QUESTION_GROUPS.map((g) =>
     `<button class="tab${g === group ? ' tab-on' : ''}" data-act="q-group" data-group="${esc(g)}">${esc(g)}</button>`).join('');
 
-  const choices = options.map((q) => `
-    <label class="choice${ui.form.qId === q.id ? ' choice-on' : ''}">
-      <input type="radio" name="q" data-act="q-pick" data-qid="${q.id}" ${ui.form.qId === q.id ? 'checked' : ''}>
-      <span class="radio">${ui.form.qId === q.id ? '●' : '○'}</span>
-      <span>${esc(q.choice)}</span>
-    </label>`).join('');
+  // 수치 질문(키·몸무게·나이)은 값을 직접 집어 고른다. 소속·술은 선택지가 이름뿐이다.
+  const chooser = isNumericGroup(options)
+    ? numericPicker(options, picked, remaining)
+    : options.map((q) => `
+        <label class="choice${ui.form.qId === q.id ? ' choice-on' : ''}">
+          <input type="radio" name="q" data-act="q-pick" data-qid="${q.id}" ${ui.form.qId === q.id ? 'checked' : ''}>
+          <span class="radio">${ui.form.qId === q.id ? '●' : '○'}</span>
+          <span>${esc(q.choice)}</span>
+        </label>`).join('');
 
   let hint = '';
   if (picked && ui.settings.splitHint) {
@@ -375,7 +446,7 @@ export function renderQuestionModal(state, ui) {
         </header>
         <div class="modal-body">
           <div class="tabs">${tabs}</div>
-          <div class="choices">${choices}</div>
+          <div class="choices">${chooser}</div>
           <div class="q-preview">${picked ? `"${esc(picked.text)}"` : '<span class="muted">질문을 고르세요</span>'}</div>
           ${hint}
           <p class="q-note">이름과 고유 토큰은 물을 수 없습니다.</p>
