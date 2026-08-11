@@ -1,5 +1,5 @@
 /**
- * 덱 검증 — GDD 6-2 의 제약 C0 ~ C4 + 추리 완결성 완전 탐색
+ * 덱 검증 — GDD 6-2 의 제약 C0 ~ C4, 질문 임계값 C5, 추리 완결성 완전 탐색
  *
  *   node data/validate-deck.js     (= npm run validate)
  *
@@ -283,7 +283,7 @@ if (reported === 0) console.log('  (없음 — 모든 캐릭터가 수치 질문
 // ── 결론 ──────────────────────────────────────────────────────────────
 console.log('');
 if (problems.length === 0) {
-  console.log('덱 검증 통과 — C1~C4 전부 충족');
+  console.log('덱 검증 통과 — C1~C5 전부 충족');
   process.exit(0);
 } else {
   console.log(`덱 검증 실패 — ${problems.length}건`);
