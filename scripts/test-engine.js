@@ -7,7 +7,7 @@ import {
   createGame, apply, currentPlayerId, playerCard, revealedTokensOf,
   actorOf, narrowCandidates, MAX_ACCUSE_FAILS,
 } from '../src/engine/engine.js';
-import { DECK, questionById, evaluate } from '../data/deck.js';
+import { DECK, QUESTIONS, questionById, evaluate, partitionKeyOf } from '../data/deck.js';
 
 let pass = 0;
 const failures = [];
@@ -308,6 +308,72 @@ check('반격 턴을 질문으로 낭비하면 선공 승리', () => {
   eq(s.result.reason, 'counter-attack-expired');
 });
 
+console.log('\n수치 질문 — 이상 / 이하');
+
+check('「이하」 질문도 카드 기준으로 진실이 강제된다', () => {
+  let s = setup({ bCard: 'c03' }); // 빅터 168cm · 62kg · 39세
+  s = truthfulExchange(s, 'h174le');            // 168 ≤ 174 → Y
+  eq(s.log.at(-1).answer, 'Y');
+  s = truthfulExchangeBy(s, 'h175');
+  s = truthfulExchange(s, 'a35le');             // 39 ≤ 35 → N
+  eq(s.log.at(-1).answer, 'N');
+  s = truthfulExchangeBy(s, 'h175');
+  s = truthfulExchange(s, 'w64le');             // 62 ≤ 64 → Y
+  eq(s.log.at(-1).answer, 'Y');
+});
+
+check('짝지어진 이상/이하는 15장 전원에서 정확히 반대 답을 낸다', () => {
+  const pairs = new Map();
+  for (const q of QUESTIONS) {
+    if (q.op === 'eq') continue;
+    const k = partitionKeyOf(q);
+    if (!pairs.has(k)) pairs.set(k, []);
+    pairs.get(k).push(q);
+  }
+  eq(pairs.size, 6, '수치 질문은 6개 지점을 가른다');
+  for (const [k, [a, b]] of pairs) {
+    assert(a && b, `${k} 에 짝이 없다`);
+    for (const c of DECK) {
+      assert(evaluate(a, c) !== evaluate(b, c), `${k} · ${c.name} 에서 ${a.short} 와 ${b.short} 의 답이 같다`);
+    }
+  }
+});
+
+check('「174 이하 YES」와 「175 이상 NO」는 같은 후보를 남긴다', () => {
+  let a = setup({ bCard: 'c03' });
+  a = truthfulExchange(a, 'h174le');
+  const byLte = narrowCandidates(a, 'B', a.log.map((e) => e.seq)).map((c) => c.id).join(',');
+
+  let b = setup({ bCard: 'c03' });
+  b = truthfulExchange(b, 'h175');
+  const byGte = narrowCandidates(b, 'B', b.log.map((e) => e.seq)).map((c) => c.id).join(',');
+
+  eq(a.log.at(-1).answer, 'Y');
+  eq(b.log.at(-1).answer, 'N');
+  eq(byLte, byGte, '표현만 다를 뿐 같은 정보여야 한다');
+  eq(byLte.split(',').length, 7, '키 163–174 구간은 7명');
+});
+
+check('모든 수치 질문의 임계값이 구간 경계에 놓여 있다 (D1)', () => {
+  const bucketFns = {
+    height: (c) => (c.heightCm >= 185 ? 3 : c.heightCm >= 175 ? 2 : 1),
+    weight: (c) => (c.weightKg >= 80 ? 3 : c.weightKg >= 65 ? 2 : 1),
+    age: (c) => (c.age >= 36 ? 3 : c.age >= 28 ? 2 : 1),
+  };
+  for (const q of QUESTIONS) {
+    if (q.op === 'eq') continue;
+    for (let b = 1; b <= 3; b += 1) {
+      const group = DECK.filter((c) => bucketFns[q.attr](c) === b);
+      if (group.length === 0) continue;
+      const first = evaluate(q, group[0]);
+      for (const c of group) {
+        assert(evaluate(q, c) === first,
+          `${q.short} 가 구간 ${b} 안의 ${group[0].name}/${c.name} 를 갈라놓는다 — 답을 들어도 후보를 지울 수 없다`);
+      }
+    }
+  }
+});
+
 console.log('\n추리 — 단서 적용');
 
 check('적용한 단서만으로 후보가 좁혀진다', () => {
@@ -371,7 +437,7 @@ check('무작위 1000판이 예외 없이 RESULT 로 끝난다', () => {
           break;
         }
         case 'QUESTION_BUILD': {
-          s = apply(s, { type: 'ASK', questionId: pick(['h175', 'h185', 'w65', 'w80', 'a28', 'a36', 'b0', 'b1', 'b2', 'd0', 'd1', 'd2']) });
+          s = apply(s, { type: 'ASK', questionId: pick(QUESTIONS).id });
           break;
         }
         case 'ANSWER_PENDING': {
@@ -417,7 +483,7 @@ check('무작위 1000판이 예외 없이 RESULT 로 끝난다', () => {
 
 check('코인 미사용 답변은 언제나 카드의 진실값과 일치한다 (전수 확인)', () => {
   for (const card of DECK) {
-    for (const qid of ['h175', 'h185', 'w65', 'w80', 'a28', 'a36', 'b0', 'b1', 'b2', 'd0', 'd1', 'd2']) {
+    for (const { id: qid } of QUESTIONS) {
       let s = setup({ aCard: card.id === 'c01' ? 'c02' : 'c01', bCard: card.id });
       s = apply(s, { type: 'OPEN_QUESTION' });
       s = apply(s, { type: 'ASK', questionId: qid });

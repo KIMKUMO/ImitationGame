@@ -9,7 +9,7 @@
  *  - 코인이 쓰인 답변은 무효로 두고, 상대의 코인이 바닥나면 같은 질문을 다시 던져 검증한다
  */
 
-import { DECK, QUESTIONS, questionById, evaluate } from '../../data/deck.js';
+import { DECK, QUESTIONS, questionById, evaluate, partitionKeyOf } from '../../data/deck.js';
 import { filterByRevealedTokens, opponentIdOf, playerCard, revealedTokensOf } from './engine.js';
 
 const LINES = [
@@ -37,17 +37,36 @@ export function botCandidates(state, botId) {
   return cands.length > 0 ? cands : DECK.slice();
 }
 
-/** 아직 검증되지 않은(코인이 쓰인) 질문 id 목록 */
-function unverifiedQuestionIds(state, botId) {
+/**
+ * 아직 검증되지 않은(코인이 쓰인) 질문 목록.
+ *
+ * 표현이 아니라 「무엇을 가르는 질문인가」로 비교한다. 상대가 「175 이상」을 코인으로
+ * 뭉갰더라도 나중에 「174 이하」에 진실로 답했다면 같은 사실이 확정된 것이다.
+ */
+function unverifiedQuestions(state, botId) {
   const targetId = opponentIdOf(state, botId);
-  const coined = new Set(state.log.filter((e) => e.targetId === targetId && e.usedCoin).map((e) => e.questionId));
-  const verified = new Set(state.log.filter((e) => e.targetId === targetId && !e.usedCoin).map((e) => e.questionId));
-  return [...coined].filter((id) => !verified.has(id));
+  const mine = state.log.filter((e) => e.targetId === targetId);
+  const keyOf = (e) => partitionKeyOf(questionById(e.questionId));
+  const verified = new Set(mine.filter((e) => !e.usedCoin).map(keyOf));
+
+  const out = new Map();
+  for (const e of mine) {
+    if (!e.usedCoin) continue;
+    const key = keyOf(e);
+    if (verified.has(key) || out.has(key)) continue;
+    out.set(key, questionById(e.questionId));
+  }
+  return [...out.values()];
 }
 
-/** 후보를 가장 균등하게 가르는 질문 */
-function bestQuestion(cands, allow = QUESTIONS) {
-  let best = null;
+/**
+ * 후보를 가장 균등하게 가르는 질문.
+ *
+ * 「175 이상」과 「174 이하」처럼 같은 자리를 가르는 짝은 점수가 같다.
+ * 동점이면 무작위로 고른다 — 봇도 두 표현을 섞어 쓰는 편이 사람처럼 읽힌다.
+ */
+function bestQuestion(cands, allow = QUESTIONS, rng = Math.random) {
+  let best = [];
   let bestScore = Infinity;
   for (const q of allow) {
     let yes = 0;
@@ -55,9 +74,11 @@ function bestQuestion(cands, allow = QUESTIONS) {
     const no = cands.length - yes;
     if (yes === 0 || no === 0) continue;      // 이미 아는 정보 — 무의미
     const score = Math.max(yes, no);
-    if (score < bestScore) { bestScore = score; best = q; }
+    if (score < bestScore) { bestScore = score; best = [q]; }
+    else if (score === bestScore) best.push(q);
   }
-  return best ?? allow[0] ?? QUESTIONS[0];
+  if (best.length === 0) return allow[0] ?? QUESTIONS[0];
+  return best[Math.floor(rng() * best.length)];
 }
 
 /**
@@ -87,13 +108,13 @@ export function botTurnActions(state, botId, rng = Math.random) {
   }
 
   // 상대 코인이 바닥났다면, 코인으로 뭉갠 질문을 다시 물어 검증한다
-  const unverified = unverifiedQuestionIds(state, botId);
+  const unverified = unverifiedQuestions(state, botId);
   if (opponentCoins === 0 && unverified.length > 0) {
-    const q = bestQuestion(cands, unverified.map(questionById));
+    const q = bestQuestion(cands, unverified, rng);
     return [{ type: 'OPEN_QUESTION' }, { type: 'ASK', questionId: q.id }];
   }
 
-  const q = bestQuestion(cands);
+  const q = bestQuestion(cands, QUESTIONS, rng);
   return [{ type: 'OPEN_QUESTION' }, { type: 'ASK', questionId: q.id }];
 }
 

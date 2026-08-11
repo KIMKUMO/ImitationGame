@@ -91,36 +91,86 @@ const BY_ID = new Map(DECK.map((c) => [c.id, c]));
 /** @returns {typeof DECK[number]} */
 export const cardById = (id) => BY_ID.get(id);
 
-// ── 질문 문법 (GDD 6-4) — 빌더가 생성 가능한 전량 12종 ────────────────
+// ── 질문 문법 (GDD 6-4) — 빌더가 생성 가능한 전량 18종 ────────────────
+//
+// 수치 질문은 「이상」과 「이하」 양쪽으로 물을 수 있다.
+// 임계값은 반드시 구간 경계에 놓인다 (GDD D1):
+//   이상 → 구간의 아래쪽 경계 (175 · 185)
+//   이하 → 구간의 위쪽 경계   (174 · 184)
+// 174 이하와 175 이상은 같은 자리를 가르는 뒤집힌 표현이다. 정보량은 같고,
+// 표현만 다르다 — 짧은 쪽을 쫓을 때 「이하」가 자연스럽기에 둘 다 열어둔다.
 export const QUESTIONS = [
-  { id: 'h175', group: '키',     attr: 'height', op: 'gte', value: 175,      text: '당신의 키는 175cm 이상입니까?',   choice: '175 cm 이상입니까?', short: '키 ≥ 175cm' },
-  { id: 'h185', group: '키',     attr: 'height', op: 'gte', value: 185,      text: '당신의 키는 185cm 이상입니까?',   choice: '185 cm 이상입니까?', short: '키 ≥ 185cm' },
-  { id: 'w65',  group: '몸무게', attr: 'weight', op: 'gte', value: 65,       text: '당신의 몸무게는 65kg 이상입니까?', choice: '65 kg 이상입니까?',  short: '몸무게 ≥ 65kg' },
-  { id: 'w80',  group: '몸무게', attr: 'weight', op: 'gte', value: 80,       text: '당신의 몸무게는 80kg 이상입니까?', choice: '80 kg 이상입니까?',  short: '몸무게 ≥ 80kg' },
-  { id: 'a28',  group: '나이',   attr: 'age',    op: 'gte', value: 28,       text: '당신은 28세 이상입니까?',          choice: '28세 이상입니까?',   short: '28세 이상' },
-  { id: 'a36',  group: '나이',   attr: 'age',    op: 'gte', value: 36,       text: '당신은 36세 이상입니까?',          choice: '36세 이상입니까?',   short: '36세 이상' },
-  { id: 'b0',   group: '소속',   attr: 'branch', op: 'eq',  value: '육군',   text: '당신은 육군 소속입니까?',          choice: '육군 소속입니까?',   short: '육군?' },
-  { id: 'b1',   group: '소속',   attr: 'branch', op: 'eq',  value: '공군',   text: '당신은 공군 소속입니까?',          choice: '공군 소속입니까?',   short: '공군?' },
-  { id: 'b2',   group: '소속',   attr: 'branch', op: 'eq',  value: '해군',   text: '당신은 해군 소속입니까?',          choice: '해군 소속입니까?',   short: '해군?' },
-  { id: 'd0',   group: '술',     attr: 'drink',  op: 'eq',  value: '위스키', text: '당신이 마신 술은 위스키입니까?',   choice: '위스키입니까?',      short: '위스키?' },
-  { id: 'd1',   group: '술',     attr: 'drink',  op: 'eq',  value: '맥주',   text: '당신이 마신 술은 맥주입니까?',     choice: '맥주입니까?',        short: '맥주?' },
-  { id: 'd2',   group: '술',     attr: 'drink',  op: 'eq',  value: '칵테일', text: '당신이 마신 술은 칵테일입니까?',   choice: '칵테일입니까?',      short: '칵테일?' },
+  { id: 'h175',   group: '키',     attr: 'height', op: 'gte', value: 175,      text: '당신의 키는 175cm 이상입니까?',   choice: '175 cm 이상입니까?', short: '키 ≥ 175cm' },
+  { id: 'h185',   group: '키',     attr: 'height', op: 'gte', value: 185,      text: '당신의 키는 185cm 이상입니까?',   choice: '185 cm 이상입니까?', short: '키 ≥ 185cm' },
+  { id: 'h174le', group: '키',     attr: 'height', op: 'lte', value: 174,      text: '당신의 키는 174cm 이하입니까?',   choice: '174 cm 이하입니까?', short: '키 ≤ 174cm' },
+  { id: 'h184le', group: '키',     attr: 'height', op: 'lte', value: 184,      text: '당신의 키는 184cm 이하입니까?',   choice: '184 cm 이하입니까?', short: '키 ≤ 184cm' },
+
+  { id: 'w65',    group: '몸무게', attr: 'weight', op: 'gte', value: 65,       text: '당신의 몸무게는 65kg 이상입니까?', choice: '65 kg 이상입니까?',  short: '몸무게 ≥ 65kg' },
+  { id: 'w80',    group: '몸무게', attr: 'weight', op: 'gte', value: 80,       text: '당신의 몸무게는 80kg 이상입니까?', choice: '80 kg 이상입니까?',  short: '몸무게 ≥ 80kg' },
+  { id: 'w64le',  group: '몸무게', attr: 'weight', op: 'lte', value: 64,       text: '당신의 몸무게는 64kg 이하입니까?', choice: '64 kg 이하입니까?',  short: '몸무게 ≤ 64kg' },
+  { id: 'w79le',  group: '몸무게', attr: 'weight', op: 'lte', value: 79,       text: '당신의 몸무게는 79kg 이하입니까?', choice: '79 kg 이하입니까?',  short: '몸무게 ≤ 79kg' },
+
+  { id: 'a28',    group: '나이',   attr: 'age',    op: 'gte', value: 28,       text: '당신은 28세 이상입니까?',          choice: '28세 이상입니까?',   short: '28세 이상' },
+  { id: 'a36',    group: '나이',   attr: 'age',    op: 'gte', value: 36,       text: '당신은 36세 이상입니까?',          choice: '36세 이상입니까?',   short: '36세 이상' },
+  { id: 'a27le',  group: '나이',   attr: 'age',    op: 'lte', value: 27,       text: '당신은 27세 이하입니까?',          choice: '27세 이하입니까?',   short: '27세 이하' },
+  { id: 'a35le',  group: '나이',   attr: 'age',    op: 'lte', value: 35,       text: '당신은 35세 이하입니까?',          choice: '35세 이하입니까?',   short: '35세 이하' },
+
+  { id: 'b0',     group: '소속',   attr: 'branch', op: 'eq',  value: '육군',   text: '당신은 육군 소속입니까?',          choice: '육군 소속입니까?',   short: '육군?' },
+  { id: 'b1',     group: '소속',   attr: 'branch', op: 'eq',  value: '공군',   text: '당신은 공군 소속입니까?',          choice: '공군 소속입니까?',   short: '공군?' },
+  { id: 'b2',     group: '소속',   attr: 'branch', op: 'eq',  value: '해군',   text: '당신은 해군 소속입니까?',          choice: '해군 소속입니까?',   short: '해군?' },
+
+  { id: 'd0',     group: '술',     attr: 'drink',  op: 'eq',  value: '위스키', text: '당신이 마신 술은 위스키입니까?',   choice: '위스키입니까?',      short: '위스키?' },
+  { id: 'd1',     group: '술',     attr: 'drink',  op: 'eq',  value: '맥주',   text: '당신이 마신 술은 맥주입니까?',     choice: '맥주입니까?',        short: '맥주?' },
+  { id: 'd2',     group: '술',     attr: 'drink',  op: 'eq',  value: '칵테일', text: '당신이 마신 술은 칵테일입니까?',   choice: '칵테일입니까?',      short: '칵테일?' },
 ];
 
 export const QUESTION_GROUPS = ['키', '몸무게', '나이', '소속', '술'];
 
+/** 수치 질문의 비교 방향 */
+export const OPS = [
+  { op: 'gte', label: '이상', symbol: '≥' },
+  { op: 'lte', label: '이하', symbol: '≤' },
+];
+
 const BY_QID = new Map(QUESTIONS.map((q) => [q.id, q]));
 export const questionById = (id) => BY_QID.get(id);
 
+export const isNumericQuestion = (q) => q.op === 'gte' || q.op === 'lte';
+
+/**
+ * 이 질문이 눈금자의 「어느 지점」을 가르는가.
+ * 175 이상과 174 이하는 같은 자리(175 앞)를 가르므로 같은 값을 돌려준다.
+ * 눈금자에서 손잡이 위치를 맞추고, 이상↔이하를 전환해도 자리가 튀지 않게 하는 데 쓴다.
+ */
+export const cutPointOf = (q) => (q.op === 'lte' ? q.value + 1 : q.value);
+
+/**
+ * 이 질문이 15장을 어떻게 갈라놓는가의 식별자.
+ * 표현이 달라도 같은 사실을 묻는 질문은 같은 키를 갖는다 (175 이상 = 174 이하).
+ * 「코인으로 뭉갠 답을 다시 물어 검증했는가」를 판단할 때 표현에 속지 않으려고 쓴다.
+ */
+export const partitionKeyOf = (q) =>
+  (q.op === 'eq' ? `${q.attr}=${q.value}` : `${q.attr}@${cutPointOf(q)}`);
+
+const attrValue = (attr, c) => {
+  switch (attr) {
+    case 'height': return c.heightCm;
+    case 'weight': return c.weightKg;
+    case 'age':    return c.age;
+    case 'branch': return c.branch;
+    case 'drink':  return c.drink;
+    default: throw new Error(`unknown attr: ${attr}`);
+  }
+};
+
 /** 질문 q 에 대한 캐릭터 c 의 진실값 */
 export function evaluate(q, c) {
-  switch (q.attr) {
-    case 'height': return c.heightCm >= q.value;
-    case 'weight': return c.weightKg >= q.value;
-    case 'age':    return c.age >= q.value;
-    case 'branch': return c.branch === q.value;
-    case 'drink':  return c.drink === q.value;
-    default: throw new Error(`unknown attr: ${q.attr}`);
+  const v = attrValue(q.attr, c);
+  switch (q.op) {
+    case 'gte': return v >= q.value;
+    case 'lte': return v <= q.value;
+    case 'eq':  return v === q.value;
+    default: throw new Error(`unknown op: ${q.op}`);
   }
 }
 

@@ -7,7 +7,7 @@
 
 import {
   DECK, PAMPHLET, QUESTIONS, QUESTION_GROUPS, TOKEN_EMOJI, TOKEN_MEANING,
-  questionById, cardById, evaluate, splitCount, ATTR_META,
+  questionById, cardById, evaluate, splitCount, ATTR_META, OPS, cutPointOf,
 } from '../../data/deck.js';
 import {
   currentPlayerId, opponentIdOf, playerCard, revealedTokensOf,
@@ -343,33 +343,47 @@ export function renderBoard(state, ui) {
 // ── 화면 5. 질문 빌더 ─────────────────────────────────────────────────
 
 /** 임계값을 갖는 수치 질문(키·몸무게·나이)인가 */
-export const isNumericGroup = (options) => options.length > 0 && options[0].op === 'gte';
+export const isNumericGroup = (options) => options.length > 0 && options[0].op !== 'eq';
 
 /**
- * 수치 눈금자 — 사용자가 임계값을 직접 집는다.
+ * 수치 눈금자 — 사용자가 비교 방향과 임계값을 직접 집는다.
  *
- * 고를 수 있는 값이 구간 경계 두 곳뿐인 이유는 GDD D1 이다.
+ * 「이상」과 「이하」를 모두 열어두되, 임계값은 구간 경계에만 놓인다 (GDD D1).
+ *   이상 → 구간의 아래쪽 경계 (175 · 185)
+ *   이하 → 구간의 위쪽 경계   (174 · 184)
  * 팜플렛에는 구간(`175–184`)만 적혀 있으므로, 경계가 아닌 값(예: 180)으로 물으면
  * 답을 들어도 그 구간 안의 누구를 지울지 판단할 수 없다 —
  * 후보를 논리적으로 제거할 수 없는 질문은 질문이 아니다.
- * 그래서 눈금자는 구간 전체를 보여주되, 집을 수 있는 지점만 손잡이로 열어둔다.
+ *
+ * 174 이하와 175 이상은 같은 자리를 가르는 뒤집힌 표현이라 손잡이가 같은 위치에 선다.
+ * 그래서 이상↔이하를 전환해도 눈금자의 자리는 튀지 않는다.
  */
-function numericPicker(options, picked, remaining) {
-  const meta = ATTR_META[options[0].attr];
+function numericPicker(allOptions, picked, remaining, op) {
+  const meta = ATTR_META[allOptions[0].attr];
   const [lo, hi] = meta.range;
   const total = hi + 1 - lo;                 // 눈금자가 [lo, hi] 정수 전체를 덮도록
   const pct = (v) => ((v - lo) / total) * 100;
+
+  const options = allOptions
+    .filter((o) => o.op === op)
+    .sort((a, b) => cutPointOf(a) - cutPointOf(b));
   const idx = picked ? options.findIndex((o) => o.id === picked.id) : -1;
 
+  const opTabs = OPS.map((o) => `
+    <button class="op${o.op === op ? ' op-on' : ''}" data-act="q-op" data-op="${o.op}">
+      ${esc(o.label)}<span class="op-sym">${o.symbol}</span>
+    </button>`).join('');
+
   // 구간 경계로 잘린 세 토막
-  const cuts = [lo, ...options.map((o) => o.value), hi + 1];
+  const cuts = [lo, ...options.map(cutPointOf), hi + 1];
+  const cut = picked ? cutPointOf(picked) : null;
   const segments = meta.buckets.map((label, i) => {
     const width = ((cuts[i + 1] - cuts[i]) / total) * 100;
     const count = remaining.filter((c) => {
       const v = c[meta.key];
       return v >= cuts[i] && v < cuts[i + 1];
     }).length;
-    const side = picked ? (cuts[i] >= picked.value ? 'yes' : 'no') : '';
+    const side = cut === null ? '' : ((picked.op === 'gte' ? cuts[i] >= cut : cuts[i] < cut) ? 'yes' : 'no');
     return `
       <div class="scale-seg${side ? ` scale-seg-${side}` : ''}" style="width:${width}%">
         <span class="scale-seg-label">${label}</span>
@@ -379,19 +393,23 @@ function numericPicker(options, picked, remaining) {
 
   const handles = options.map((o) => `
     <button class="scale-handle${picked?.id === o.id ? ' scale-handle-on' : ''}"
-      style="left:${pct(o.value)}%" data-act="q-pick" data-qid="${o.id}"
-      aria-label="${o.value}${meta.unit} 에서 가르기">
+      style="left:${pct(cutPointOf(o))}%" data-act="q-pick" data-qid="${o.id}"
+      aria-label="${o.value}${meta.unit} ${op === 'gte' ? '이상' : '이하'} 로 가르기">
       <span class="scale-handle-flag">${o.value}</span>
       <span class="scale-handle-stem"></span>
     </button>`).join('');
 
+  const opLabel = OPS.find((o) => o.op === op).label;
+
   return `
     <div class="num-picker">
+      <div class="op-toggle" role="group" aria-label="비교 방향">${opTabs}</div>
+
       <div class="num-readout">
         <button class="num-step" data-act="q-step" data-dir="-1" ${idx <= 0 ? 'disabled' : ''} aria-label="더 작은 값">◀</button>
         <div class="num-value">
           ${picked ? picked.value : '—'}<span class="num-unit">${esc(meta.unit)}</span>
-          <span class="num-suffix">이상</span>
+          <span class="num-suffix">${esc(opLabel)}</span>
         </div>
         <button class="num-step" data-act="q-step" data-dir="1" ${idx < 0 || idx >= options.length - 1 ? 'disabled' : ''} aria-label="더 큰 값">▶</button>
       </div>
@@ -405,6 +423,7 @@ function numericPicker(options, picked, remaining) {
       <p class="num-why">
         팜플렛에는 <strong>구간</strong>만 적혀 있습니다. 경계가 아닌 값으로 물으면
         답을 들어도 그 구간 안의 누구를 지울지 알 수 없어, 집을 수 있는 지점은 두 곳입니다.
+        <br><span class="muted">「174 이하」와 「175 이상」은 같은 자리를 가르는 뒤집힌 표현입니다.</span>
       </p>
     </div>`;
 }
@@ -421,7 +440,7 @@ export function renderQuestionModal(state, ui) {
 
   // 수치 질문(키·몸무게·나이)은 값을 직접 집어 고른다. 소속·술은 선택지가 이름뿐이다.
   const chooser = isNumericGroup(options)
-    ? numericPicker(options, picked, remaining)
+    ? numericPicker(options, picked, remaining, ui.form.qOp)
     : options.map((q) => `
         <label class="choice${ui.form.qId === q.id ? ' choice-on' : ''}">
           <input type="radio" name="q" data-act="q-pick" data-qid="${q.id}" ${ui.form.qId === q.id ? 'checked' : ''}>

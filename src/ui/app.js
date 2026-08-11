@@ -5,7 +5,7 @@
  * 핫시트에서 상대의 카드가 새지 않게 막는 책임이 전부 여기 있다.
  */
 
-import { QUESTIONS } from '../../data/deck.js';
+import { QUESTIONS, cutPointOf } from '../../data/deck.js';
 import { LocalTransport } from '../net/transport.js';
 import {
   actorOf, currentPlayerId, dealCards, opponentIdOf, isGameOver,
@@ -18,6 +18,7 @@ const STORE_KEY = 'imitation-game/prefs';
 
 const DEFAULT_FORM = {
   qGroup: '키',
+  qOp: 'gte',        // 수치 질문의 비교 방향 — 이상(gte) / 이하(lte)
   qId: null,
   coinStep: 1,
   coinLine: '',
@@ -146,7 +147,8 @@ export function createApp(root) {
     switch (phase) {
       case 'QUESTION_BUILD':
         ui.form.qGroup = '키';
-        ui.form.qId = defaultQuestionOf('키');
+        ui.form.qOp = 'gte';
+        ui.form.qId = defaultQuestionOf('키', 'gte');
         break;
       case 'ANSWER_PENDING':
         ui.form.coinStep = 1;
@@ -332,16 +334,27 @@ export function createApp(root) {
 
       case 'q-group':
         ui.form.qGroup = el.dataset.group;
-        ui.form.qId = defaultQuestionOf(ui.form.qGroup);
+        ui.form.qId = defaultQuestionOf(ui.form.qGroup, ui.form.qOp);
         render();
         break;
       case 'q-pick':
         ui.form.qId = el.dataset.qid;
         render();
         break;
+      case 'q-op': {
+        // 이상 ↔ 이하 전환. 같은 자리를 가르는 짝으로 옮겨 손잡이 위치를 유지한다
+        const nextOp = el.dataset.op;
+        const cur = QUESTIONS.find((q) => q.id === ui.form.qId);
+        const opts = numericOptions(ui.form.qGroup, nextOp);
+        ui.form.qOp = nextOp;
+        ui.form.qId = (cur && opts.find((o) => cutPointOf(o) === cutPointOf(cur)))?.id ?? opts[0]?.id ?? null;
+        render();
+        break;
+      }
       case 'q-step': {
         // 수치 눈금자의 ◀ ▶ — 고를 수 있는 임계값 사이를 옮겨 다닌다
-        const opts = questionsOf(ui.form.qGroup);
+        const opts = numericOptions(ui.form.qGroup, ui.form.qOp);
+        if (opts.length === 0) break;
         const dir = Number(el.dataset.dir);
         const i = opts.findIndex((o) => o.id === ui.form.qId);
         const next = i < 0
@@ -457,14 +470,19 @@ export function createApp(root) {
 
 const questionsOf = (group) => QUESTIONS.filter((q) => q.group === group);
 
+/** 한 그룹의 수치 질문을, 눈금자에서 가르는 자리 순으로 */
+const numericOptions = (group, op) =>
+  questionsOf(group).filter((q) => q.op === op).sort((a, b) => cutPointOf(a) - cutPointOf(b));
+
 /**
  * 탭을 열었을 때의 기본 선택.
  * 수치 질문은 눈금자에 값이 하나 집혀 있어야 읽히므로 첫 임계값을 미리 집어둔다.
  * 소속·술은 선택지가 이름뿐이라 고르지 않은 상태로 시작한다.
  */
-function defaultQuestionOf(group) {
+function defaultQuestionOf(group, op) {
   const opts = questionsOf(group);
-  return opts.length > 0 && opts[0].op === 'gte' ? opts[0].id : null;
+  if (opts.length === 0 || opts[0].op === 'eq') return null;
+  return numericOptions(group, op)[0]?.id ?? null;
 }
 
 function loadPrefs() {

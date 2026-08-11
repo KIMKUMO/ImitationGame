@@ -123,8 +123,59 @@ unsafe.length === 0
   ? ok(`전원 안전. 최소 보장 캐릭터 = ${weakest.name} (최선의 2개 공개 시 후보 ${weakest.best}명 잔존)`)
   : bad(`2개 공개로 즉시 확정되는 캐릭터: ${unsafe.join(', ')}`);
 
+// ── C5. 질문 임계값이 구간 경계에 놓여 있는가 (GDD D1) ────────────────
+section('C5. 질문 임계값 — 구간을 쪼개는 질문이 없는가');
+
+const bucketOf = { height: heightBucket, weight: weightBucket, age: ageBucket };
+const splitsBucket = [];
+for (const q of QUESTIONS) {
+  if (q.op === 'eq') continue;
+  const toBucketFn = bucketOf[q.attr];
+  for (let b = 1; b <= 3; b += 1) {
+    const inBucket = DECK.filter((c) => toBucketFn(c) === b);
+    if (inBucket.length === 0) continue;
+    const first = evaluate(q, inBucket[0]);
+    const odd = inBucket.find((c) => evaluate(q, c) !== first);
+    if (odd) {
+      splitsBucket.push(`${q.short} 가 구간 ${b} 안의 ${inBucket[0].name}/${odd.name} 를 갈라놓는다`);
+    }
+  }
+}
+splitsBucket.length === 0
+  ? ok(`수치 질문 ${QUESTIONS.filter((q) => q.op !== 'eq').length}종 모두 구간 경계에서만 가른다`)
+  : bad(`구간 내부를 쪼개는 질문: ${splitsBucket.join(' · ')}  ← 답을 들어도 후보를 지울 수 없다 (D1 위반)`);
+
+// 이상/이하가 서로의 뒤집힌 표현으로 정확히 짝지어지는가
+const cutMap = new Map();
+for (const q of QUESTIONS) {
+  if (q.op === 'eq') continue;
+  const key = `${q.attr}@${q.op === 'lte' ? q.value + 1 : q.value}`;
+  if (!cutMap.has(key)) cutMap.set(key, []);
+  cutMap.get(key).push(q);
+}
+const unpaired = [...cutMap.entries()].filter(([, qs]) => qs.length !== 2);
+unpaired.length === 0
+  ? ok(`이상/이하가 ${cutMap.size}개 지점에서 정확히 짝을 이룬다`)
+  : bad(`짝이 없는 임계값: ${unpaired.map(([k, qs]) => `${k} (${qs.map((q) => q.short).join(',')})`).join(' · ')}`);
+
+// 짝지어진 두 질문이 실제로 정반대 답을 내는가
+const mismatched = [];
+for (const [key, qs] of cutMap) {
+  if (qs.length !== 2) continue;
+  const [a, b] = qs;
+  for (const c of DECK) {
+    if (evaluate(a, c) === evaluate(b, c)) {
+      mismatched.push(`${key}: ${c.name} 에서 ${a.short} 와 ${b.short} 의 답이 같다`);
+      break;
+    }
+  }
+}
+mismatched.length === 0
+  ? ok('짝지어진 이상/이하 질문은 15장 전원에서 정확히 반대 답을 낸다')
+  : bad(mismatched.join(' · '));
+
 // ── 질문 효율 ─────────────────────────────────────────────────────────
-section('질문 효율 — 12종 질문의 분할비');
+section(`질문 효율 — ${QUESTIONS.length}종 질문의 분할비`);
 
 for (const q of QUESTIONS) {
   const yes = DECK.filter((c) => evaluate(q, c)).length;
