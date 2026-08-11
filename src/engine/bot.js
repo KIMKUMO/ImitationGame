@@ -106,18 +106,25 @@ export function botAnswerAction(state, botId, rng = Math.random) {
   const truth = evaluate(q, playerCard(state, botId));
   const coinsLeft = state.players[botId].coinsLeft;
 
-  if (coinsLeft > 0) {
+  // 마지막 코인은 아껴 둔다. 둘 다 일찍 털면 이후 모든 답변이 진실로 확정되어
+  // 종반이 통째로 불리해진다 (GDD D5 의 「후반 신뢰도의 압박」).
+  const mayUseCoin = coinsLeft >= 2 || state.turnNumber >= 5;
+
+  if (coinsLeft > 0 && mayUseCoin) {
     // 덱을 균등하게 가르는 질문일수록 진실을 넘기는 손해가 크다 → 코인을 쓸 확률을 올린다
     let yes = 0;
     for (const c of DECK) if (evaluate(q, c)) yes += 1;
     const balance = 1 - Math.abs(yes - (DECK.length - yes)) / DECK.length; // 0~1
-    const chance = 0.18 + 0.22 * balance;
+    const chance = 0.10 + 0.18 * balance;
 
     if (rng() < chance) {
       // 60% 거짓, 40% 정직한 블러핑 — D6 이 실제로 작동하는지 사람이 겪어봐야 한다
       const lie = rng() < 0.6;
       const answer = (lie ? !truth : truth) ? 'Y' : 'N';
-      const line = LINES[Math.floor(rng() * LINES.length)];
+      // 직전에 쓴 대사는 피한다 — 같은 말을 반복하면 사람처럼 읽히지 않는다
+      const lastLine = [...state.log].reverse().find((e) => e.targetId === botId && e.line)?.line;
+      const pool = LINES.filter((l) => l !== lastLine);
+      const line = pool[Math.floor(rng() * pool.length)];
       return { type: 'ANSWER', usedCoin: true, answer, line };
     }
   }
