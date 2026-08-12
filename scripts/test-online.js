@@ -123,11 +123,8 @@ check('소문자 코드도 같은 방으로 붙는다 (재입장)', () => {
   eq(lower.data.rejoined, true);
 });
 
-const third = await postJson(`/api/room/${CODE}/join`, { token: stranger.token, nick: '난입' });
-check('세 번째 사람은 정원 초과로 거절된다', () => {
-  eq(third.status, 409);
-  eq(third.data.code, 'full');
-});
+// stranger 는 끝까지 입장하지 않는다 — 「방에 없는 토큰」 검증용.
+// 정원 초과(4인)는 아래 4인 서바이벌 절에서 확인한다.
 
 console.log('\n연결 · 대기실');
 
@@ -364,6 +361,139 @@ check('방장이 다시 시작하면 카드가 새로 배분된다', () => {
 
 host.close();
 back.close();
+
+console.log('\n4인 서바이벌');
+
+{
+  const four = ['HOST4', 'G1', 'G2', 'G3'].map((n) => new Client(n, crypto.randomUUID()));
+  const made = await postJson('/api/room', { token: four[0].token, nick: '앨런' });
+  const CODE4 = made.data.code;
+  for (let i = 1; i < 4; i += 1) {
+    await postJson(`/api/room/${CODE4}/join`, { token: four[i].token, nick: `P${i + 1}` });
+  }
+  const fifth = await postJson(`/api/room/${CODE4}/join`, { token: crypto.randomUUID(), nick: '난입' });
+  check('5번째 사람은 정원 초과로 거절된다', () => {
+    eq(fifth.status, 409);
+    eq(fifth.data.code, 'full');
+  });
+
+  for (const c of four) await c.connect(CODE4);
+  await until(() => four.every((c) => c.room), '4인 전원 방 정보 수신');
+  check('대기실에 네 명이 모인다', () => eq(four[0].room.players.length, 4));
+
+  for (const c of four) c.send({ type: 'ready', ready: true });
+  await until(() => four[0].room.players.every((p) => p.ready), '전원 준비');
+  four[0].send({ type: 'start' });
+  await until(() => four.every((c) => c.state), '4인 게임 시작');
+
+  const byId4 = Object.fromEntries(four.map((c) => [c.playerId, c]));
+  const alive4 = () => four[0].state.order.filter((id) => !four[0].state.players[id].eliminated);
+
+  check('4인은 서바이벌 모드이고 코인이 3개다', () => {
+    eq(four[0].state.mode, 'survival');
+    for (const id of four[0].state.order) eq(four[0].state.players[id].coinsLeft, 3);
+  });
+
+  check('★ 4인에서도 나머지 세 명의 카드가 전부 가려진다', () => {
+    for (const c of four) {
+      const mine = c.state.players[c.playerId].cardId;
+      assert(typeof mine === 'string', `${c.name}: 내 카드가 없다`);
+      for (const id of c.state.order) {
+        if (id === c.playerId) continue;
+        eq(c.state.players[id].cardId, null, `${c.name} 에게 ${id} 카드가 보인다`);
+      }
+    }
+  });
+
+  for (const c of four) c.act({ type: 'ACK_CARD', playerId: c.playerId });
+  await until(() => four[0].state.phase === 'ACTION_SELECT', '4인 카드 확인 완료');
+
+  // 지목 대상을 골라서 진행 — 현재 턴 플레이어가 다른 사람을 정확히 지목한다
+  const turnId = four[0].state.order[four[0].state.currentIndex];
+  const actor = byId4[turnId];
+  const victimId = four[0].state.order.find((id) => id !== turnId);
+  const victim = byId4[victimId];
+
+  actor.errors.length = 0;
+  actor.act({ type: 'OPEN_QUESTION' });
+  await until(() => four[0].state.phase === 'QUESTION_BUILD', '질문 빌더');
+  actor.act({ type: 'ASK', questionId: 'h175', targetId: victimId });
+  await until(() => four[0].state.phase === 'ANSWER_PENDING', '대상 지정 질문');
+  check('★ 질문 대상을 골라서 물을 수 있다', () => {
+    eq(four[0].state.pending.targetId, victimId);
+    eq(four[0].state.pending.askerId, turnId);
+  });
+
+  // 질문 대상이 아닌 사람이 답하려 하면 거절
+  const bystanderId = four[0].state.order.find((id) => id !== turnId && id !== victimId);
+  const bystander = byId4[bystanderId];
+  bystander.errors.length = 0;
+  bystander.act({ type: 'ANSWER', usedCoin: false });
+  await sleep(200);
+  check('질문받지 않은 사람은 대신 답할 수 없다', () => {
+    assert(bystander.errors.some((e) => e.code === 'rejected'), '제3자가 답변했다');
+  });
+
+  victim.act({ type: 'ANSWER', usedCoin: false });
+  await until(() => four[0].state.log.length === 1, '답변 기록');
+  check('★ 질문과 답변을 네 명 모두가 본다 (전원 공개)', () => {
+    for (const c of four) eq(c.state.log.length, 1, `${c.name} 이 로그를 못 봤다`);
+    const first = JSON.stringify(four[0].state.log);
+    for (const c of four) eq(JSON.stringify(c.state.log), first, `${c.name} 의 로그가 다르다`);
+  });
+
+  await until(() => four[0].state.phase === 'ACTION_SELECT', '턴 넘김', 8000);
+
+  // 이번 턴 플레이어가 다른 사람을 정확히 지목 → 그 사람만 탈락
+  // (답변자에게 턴이 넘어가므로 지목 대상은 이 시점에 다시 고른다)
+  const t2 = four[0].state.order[four[0].state.currentIndex];
+  const accuser = byId4[t2];
+  const goneId = four[0].state.order.find((id) => id !== t2);
+  const goneCard = byId4[goneId].state.players[goneId].cardId;   // 본인만 아는 값
+
+  accuser.errors.length = 0;
+  accuser.act({ type: 'OPEN_ACCUSE' });
+  await until(() => four[0].state.phase === 'ACCUSE_SELECT', '지목 화면');
+  accuser.act({ type: 'ACCUSE', targetId: goneId, cardId: goneCard });
+  await until(() => four[0].state.players[goneId].eliminated, '탈락 처리');
+
+  check('★ 지목 성공 → 그 사람만 탈락하고 게임은 계속된다', () => {
+    eq(four[0].state.phase, 'ACTION_SELECT');
+    eq(four[0].state.players[goneId].eliminated, true);
+    eq(four[0].state.result, null);
+    eq(alive4().length, 3, '세 명이 남아야 한다');
+  });
+
+  check('★ 탈락자의 카드는 전원에게 공개된다', () => {
+    for (const c of four) {
+      eq(c.state.players[goneId].cardId, goneCard, `${c.name} 에게 탈락자 카드가 안 보인다`);
+    }
+  });
+
+  check('탈락하지 않은 사람들의 카드는 여전히 가려져 있다', () => {
+    for (const c of four) {
+      for (const id of c.state.order) {
+        if (id === c.playerId || id === goneId) continue;
+        eq(c.state.players[id].cardId, null, `${c.name} 에게 ${id} 카드가 새어 나왔다`);
+      }
+    }
+  });
+
+  check('탈락자는 턴에서 건너뛰어진다', () => {
+    const cur = four[0].state.order[four[0].state.currentIndex];
+    assert(cur !== goneId, '탈락자에게 턴이 왔다');
+  });
+
+  const goneClient = byId4[goneId];
+  goneClient.errors.length = 0;
+  goneClient.act({ type: 'OPEN_QUESTION' });
+  await sleep(200);
+  check('탈락자는 더 이상 행동할 수 없다', () => {
+    assert(goneClient.errors.some((e) => e.code === 'rejected'), '탈락자가 행동했다');
+  });
+
+  for (const c of four) c.close();
+}
 
 console.log('');
 if (failures.length === 0) {

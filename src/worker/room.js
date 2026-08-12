@@ -23,7 +23,7 @@ import {
   createGame, apply, dealCards, currentPlayerId, revealedTokensOf,
 } from '../engine/engine.js';
 
-export const MAX_PLAYERS = 2;
+export const MAX_PLAYERS = 4;
 
 /** 답변 공개 후 턴이 넘어가기까지의 뜸. 알람으로 처리해 클라이언트에 의존하지 않는다 */
 const REVEAL_MS = 1500;
@@ -91,8 +91,8 @@ export class GameRoom extends DurableObject {
     if (Object.keys(room.players).length >= MAX_PLAYERS) return { ok: false, code: 'full' };
     if (room.status !== 'waiting') return { ok: false, code: 'in-progress' };
 
-    const id = 'p2';
-    room.players[id] = { id, nick: cleanNick(nick, 'MAGPIE'), token, ready: false, connected: false };
+    const id = `p${Object.keys(room.players).length + 1}`;
+    room.players[id] = { id, nick: cleanNick(nick, id.toUpperCase()), token, ready: false, connected: false };
     await this.ctx.storage.put('room', room);
     return { ok: true, playerId: id };
   }
@@ -199,7 +199,7 @@ export class GameRoom extends DurableObject {
     if (room.status !== 'waiting') return this.#fail(ws, 'already', '이미 시작했습니다');
 
     const ids = Object.keys(room.players);
-    if (ids.length < MAX_PLAYERS) return this.#fail(ws, 'not-enough', '두 명이 모여야 시작합니다');
+    if (ids.length < 2) return this.#fail(ws, 'not-enough', '두 명 이상 모여야 시작합니다');
     if (!ids.every((id) => room.players[id].ready)) {
       return this.#fail(ws, 'not-ready', '전원이 준비를 마쳐야 합니다');
     }
@@ -220,8 +220,8 @@ export class GameRoom extends DurableObject {
   /** 카드를 새로 돌리고 게임을 시작한다 — 배분은 전적으로 서버가 한다 */
   async #deal(room) {
     const ids = Object.keys(room.players);
-    // 선공은 무작위 (GDD 3-1)
-    const order = Math.random() < 0.5 ? ids : [...ids].reverse();
+    // 좌석(=턴) 순서는 무작위. 2인전의 선공도 여기서 정해진다 (GDD 3-1)
+    const order = shuffle(ids);
 
     const game = createGame({
       players: order.map((id) => ({ id, nick: room.players[id].nick, kind: 'human' })),
@@ -352,8 +352,19 @@ export function viewFor(game, playerId) {
     // 지목 실패로 공개된 토큰은 사실이므로 미리 풀어서 넣어 준다.
     // cardId 를 지우면 클라이언트가 슬롯을 토큰으로 바꿀 수 없기 때문이다.
     p.revealedTokens = revealedTokensOf(game, id);
-    p.cardId = null;
+    // 탈락자의 카드는 전원에게 공개된다 (서바이벌). 그 외에는 가린다.
+    if (!p.eliminated) p.cardId = null;
   }
 
   return view;
+}
+
+/** Fisher-Yates. 좌석 순서를 무작위로 섞는다 */
+function shuffle(arr) {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
 }

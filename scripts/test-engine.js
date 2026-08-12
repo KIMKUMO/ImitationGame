@@ -5,7 +5,7 @@
 
 import {
   createGame, apply, currentPlayerId, playerCard, revealedTokensOf,
-  actorOf, narrowCandidates, MAX_ACCUSE_FAILS,
+  actorOf, narrowCandidates, alivePlayers, opponentsOf, MAX_ACCUSE_FAILS,
 } from '../src/engine/engine.js';
 import { DECK, QUESTIONS, questionById, evaluate, partitionKeyOf } from '../data/deck.js';
 
@@ -403,6 +403,195 @@ check('내가 받은 질문의 답은 상대 추리에 쓰이지 않는다', () 
   s = truthfulExchangeBy(s, 'w80');   // B → A (A에 대한 단서)
   const aboutB = s.log.filter((e) => e.targetId === 'B');
   eq(aboutB.length, 1, 'B 에 대한 단서는 1개뿐');
+});
+
+console.log('\n3~4인 서바이벌');
+
+/** N인 판을 카드 확인까지 끝낸 상태로 만든다 */
+function setupN(cardIds) {
+  const ids = cardIds.map((_, i) => `p${i + 1}`);
+  let s = createGame({
+    players: ids.map((id, i) => ({ id, nick: `P${i + 1}` })),
+    cards: Object.fromEntries(ids.map((id, i) => [id, cardIds[i]])),
+  });
+  for (const id of ids) s = apply(s, { type: 'ACK_CARD', playerId: id });
+  return s;
+}
+
+/** 현재 턴 플레이어가 target 을 지목한다 */
+function accuseBy(s, targetId, cardId) {
+  let t = apply(s, { type: 'OPEN_ACCUSE' });
+  return apply(t, { type: 'ACCUSE', targetId, cardId });
+}
+
+check('인원에 따라 코인 개수와 판의 성격이 정해진다', () => {
+  const duel = setup();
+  eq(duel.mode, 'duel');
+  eq(duel.players.A.coinsLeft, 2);
+
+  const three = setupN(['c01', 'c02', 'c03']);
+  eq(three.mode, 'survival');
+  eq(three.players.p1.coinsLeft, 3);
+
+  const four = setupN(['c01', 'c02', 'c03', 'c04']);
+  eq(four.mode, 'survival');
+  eq(four.players.p4.coinsLeft, 3);
+});
+
+check('5인은 만들 수 없다', () => {
+  throws(() => createGame({
+    players: ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id, nick: id })),
+    cards: { a: 'c01', b: 'c02', c: 'c03', d: 'c04', e: 'c05' },
+  }), '5인이 통과했다');
+});
+
+check('3인 이상에서는 질문 대상을 지정한다', () => {
+  let s = setupN(['c01', 'c02', 'c03']);
+  s = apply(s, { type: 'OPEN_QUESTION' });
+  throws(() => apply(s, { type: 'ASK', questionId: 'h175', targetId: 'p1' }), '자기 자신에게 질문이 통과했다');
+  const t = apply(s, { type: 'ASK', questionId: 'h175', targetId: 'p3' });
+  eq(t.pending.targetId, 'p3');
+  eq(t.pending.askerId, 'p1');
+});
+
+check('★ 지목에 성공하면 그 사람이 탈락하고 게임은 계속된다', () => {
+  let s = setupN(['c01', 'c02', 'c03', 'c04']);
+  s = accuseBy(s, 'p3', 'c03');          // p1 이 p3 을 정확히 지목
+  eq(s.phase, 'ACTION_SELECT', '게임이 끝나면 안 된다');
+  eq(s.players.p3.eliminated, true);
+  eq(s.players.p1.eliminated, false, '지목한 사람은 멀쩡해야 한다');
+  eq(alivePlayers(s).length, 3);
+  eq(currentPlayerId(s), 'p2', '지목한 사람의 턴은 끝난다');
+});
+
+check('탈락자는 턴에서 건너뛴다', () => {
+  let s = setupN(['c01', 'c02', 'c03', 'c04']);
+  s = accuseBy(s, 'p2', 'c02');          // p1 이 p2 를 탈락시킴
+  eq(currentPlayerId(s), 'p3', '탈락한 p2 를 건너뛴다');
+  s = truthfulExchangeBy(s, 'h175');     // p3 의 턴 소모
+  eq(currentPlayerId(s), 'p4');
+});
+
+check('탈락자에게는 질문도 지목도 할 수 없다', () => {
+  let s = setupN(['c01', 'c02', 'c03', 'c04']);
+  s = accuseBy(s, 'p2', 'c02');
+  const q = apply(s, { type: 'OPEN_QUESTION' });
+  throws(() => apply(q, { type: 'ASK', questionId: 'h175', targetId: 'p2' }), '탈락자에게 질문이 통과했다');
+  const a = apply(s, { type: 'OPEN_ACCUSE' });
+  throws(() => apply(a, { type: 'ACCUSE', targetId: 'p2', cardId: 'c02' }), '탈락자 지목이 통과했다');
+});
+
+check('마지막 한 명이 남으면 그 사람이 승리한다', () => {
+  let s = setupN(['c01', 'c02', 'c03']);
+  s = accuseBy(s, 'p2', 'c02');          // p1 → p2 탈락. 남은 p1, p3
+  eq(s.phase, 'ACTION_SELECT');
+  eq(currentPlayerId(s), 'p3');
+  s = truthfulExchangeBy(s, 'h175');     // p3 턴 소모 → p1
+  eq(currentPlayerId(s), 'p1');
+  s = accuseBy(s, 'p3', 'c03');          // p1 → p3 탈락 → p1 만 남는다
+  eq(s.phase, 'RESULT');
+  eq(s.result.winner, 'p1');
+  eq(s.result.reason, 'last-standing');
+});
+
+check('서바이벌에는 반격 턴이 없다', () => {
+  let s = setupN(['c01', 'c02', 'c03']);
+  s = accuseBy(s, 'p2', 'c02');
+  eq(s.counterAttack, false, '3인전에 반격 턴이 생겼다');
+});
+
+check('서바이벌에서 지목 3회 실패하면 스스로 탈락한다', () => {
+  let s = setupN(['c01', 'c02', 'c03', 'c04']);
+  const wrong = 'c15';
+  for (let i = 0; i < 2; i += 1) {
+    s = accuseBy(s, 'p2', wrong);
+    eq(s.phase, 'PENALTY_TOKEN_SELECT');
+    const free = [0, 1, 2, 3, 4].filter((x) => !s.players.p1.revealedSlots.includes(x));
+    s = apply(s, { type: 'REVEAL_TOKENS', slots: [free[0], free[1]] });
+    // p2 · p3 · p4 의 턴을 흘려보내 p1 에게 되돌린다
+    for (let k = 0; k < 3; k += 1) s = truthfulExchangeBy(s, 'h175');
+  }
+  eq(s.players.p1.accuseFails, 2);
+  s = accuseBy(s, 'p2', wrong);
+  eq(s.players.p1.eliminated, true, '3회째에 스스로 탈락해야 한다');
+  eq(s.phase, 'ACTION_SELECT', '남은 3명으로 게임은 계속된다');
+  eq(alivePlayers(s).length, 3);
+});
+
+check('결과에 탈락 순서가 남는다', () => {
+  let s = setupN(['c01', 'c02', 'c03']);
+  s = accuseBy(s, 'p2', 'c02');
+  s = truthfulExchangeBy(s, 'h175');
+  s = accuseBy(s, 'p3', 'c03');
+  eq(s.result.eliminations.length, 2);
+  eq(s.result.eliminations[0].id, 'p2');
+  eq(s.result.eliminations[0].by, 'p1');
+  eq(s.result.eliminations[0].reason, 'accused');
+  eq(s.result.eliminations[1].id, 'p3');
+});
+
+check('무작위 4인 자동 플레이 500판이 예외 없이 끝난다', () => {
+  let seed = 777;
+  const rng = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const pick = (a) => a[Math.floor(rng() * a.length)];
+  const reasons = new Map();
+
+  for (let g = 0; g < 500; g += 1) {
+    const ids = [];
+    while (ids.length < 4) {
+      const c = pick(DECK).id;
+      if (!ids.includes(c)) ids.push(c);
+    }
+    let s = setupN(ids);
+    let guard = 0;
+    while (s.phase !== 'RESULT') {
+      guard += 1;
+      if (guard > 600) throw new Error('600 스텝 안에 끝나지 않았다');
+      const me = currentPlayerId(s);
+      const foes = opponentsOf(s, me);
+      switch (s.phase) {
+        case 'ACTION_SELECT':
+          s = apply(s, rng() < 0.22 ? { type: 'OPEN_ACCUSE' } : { type: 'OPEN_QUESTION' });
+          break;
+        case 'QUESTION_BUILD':
+          s = apply(s, { type: 'ASK', questionId: pick(QUESTIONS).id, targetId: pick(foes) });
+          break;
+        case 'ANSWER_PENDING': {
+          const answerer = s.players[s.pending.targetId];
+          if (answerer.coinsLeft > 0 && rng() < 0.3) {
+            s = apply(s, { type: 'ANSWER', usedCoin: true, answer: rng() < 0.5 ? 'Y' : 'N', line: '글쎄' });
+          } else {
+            s = apply(s, { type: 'ANSWER', usedCoin: false });
+          }
+          break;
+        }
+        case 'REVEAL':
+          s = apply(s, { type: 'CONTINUE' });
+          break;
+        case 'ACCUSE_SELECT':
+          s = apply(s, { type: 'ACCUSE', targetId: pick(foes), cardId: pick(DECK).id });
+          break;
+        case 'PENALTY_TOKEN_SELECT': {
+          const free = [0, 1, 2, 3, 4].filter((i) => !s.players[me].revealedSlots.includes(i));
+          s = apply(s, { type: 'REVEAL_TOKENS', slots: [free[0], free[1]] });
+          break;
+        }
+        default:
+          throw new Error(`예상 못한 phase: ${s.phase}`);
+      }
+    }
+
+    // 종료 불변식
+    assert(s.result.winner !== 'draw' ? s.players[s.result.winner] : true, `이상한 승자: ${s.result.winner}`);
+    eq(alivePlayers(s).length <= 1, true, '승자 외에 살아남은 사람이 있다');
+    for (const id of s.order) {
+      assert(s.players[id].accuseFails <= 3, '지목 실패가 3을 넘었다');
+      assert(s.players[id].coinsLeft >= 0, '코인이 음수');
+      assert(s.players[id].revealedSlots.length <= 4, '토큰이 4슬롯 넘게 공개됐다');
+    }
+    reasons.set(s.result.reason, (reasons.get(s.result.reason) ?? 0) + 1);
+  }
+  console.log(`      종료 사유 분포: ${[...reasons.entries()].map(([k, v]) => `${k} ${v}`).join(' · ')}`);
 });
 
 console.log('\n무작위 자동 플레이 — 규칙이 항상 종료로 수렴하는가');

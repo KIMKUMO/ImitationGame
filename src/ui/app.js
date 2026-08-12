@@ -9,7 +9,7 @@ import { QUESTIONS, cutPointOf } from '../../data/deck.js';
 import { LocalTransport } from '../net/transport.js';
 import { CloudflareTransport } from '../net/cloudflare.js';
 import {
-  actorOf, currentPlayerId, dealCards, opponentIdOf, isGameOver,
+  actorOf, currentPlayerId, dealCards, opponentIdOf, opponentsOf, isGameOver,
 } from '../engine/engine.js';
 import { botTurnActions, botAnswerAction, botPenaltyAction } from '../engine/bot.js';
 import { createNotes, syncAutoApply, cycleMark, toggleClue } from './notes.js';
@@ -19,12 +19,15 @@ const STORE_KEY = 'imitation-game/prefs';
 
 const DEFAULT_FORM = {
   qGroup: '키',
-  qOp: 'gte',        // 수치 질문의 비교 방향 — 이상(gte) / 이하(lte)
+  qOp: 'gte',          // 수치 질문의 비교 방향 — 이상(gte) / 이하(lte)
   qId: null,
+  qTarget: null,       // 3인 이상 — 누구에게 물을 것인가
   coinStep: 1,
   coinLine: '',
   coinAnswer: null,
+  accuseTarget: null,  // 3인 이상 — 누구를 지목할 것인가
   accuseCardId: null,
+  noteTarget: null,    // 팜플렛에서 지금 보고 있는 상대
   tokenSlots: [],
 };
 
@@ -155,6 +158,19 @@ export function createApp(root) {
     if (ui.viewerId === null && isGameOver(state)) ui.viewerId = state.order[0];
   }
 
+  /** 지금 화면에서 기본으로 고를 상대 (좌석 순서상 첫 생존자) */
+  function defaultTarget() {
+    const state = net.state;
+    if (!state) return null;
+    return opponentsOf(state, ui.viewerId)[0] ?? null;
+  }
+
+  /** 팜플렛에서 지금 보고 있는 상대 */
+  function noteTargetOf(state) {
+    const foes = opponentsOf(state, ui.viewerId);
+    return foes.includes(ui.form.noteTarget) ? ui.form.noteTarget : (foes[0] ?? opponentIdOf(state, ui.viewerId));
+  }
+
   function restoreFocus() {
     const ta = root.querySelector('textarea[data-field="coinLine"]');
     if (ta && document.activeElement !== ta) {
@@ -189,6 +205,7 @@ export function createApp(root) {
         ui.form.qGroup = '키';
         ui.form.qOp = 'gte';
         ui.form.qId = defaultQuestionOf('키', 'gte');
+        ui.form.qTarget = defaultTarget();
         break;
       case 'ANSWER_PENDING':
         ui.form.coinStep = 1;
@@ -197,6 +214,7 @@ export function createApp(root) {
         break;
       case 'ACCUSE_SELECT':
         ui.form.accuseCardId = null;
+        ui.form.accuseTarget = defaultTarget();
         break;
       case 'PENALTY_TOKEN_SELECT':
         ui.form.tokenSlots = [];
@@ -502,9 +520,17 @@ export function createApp(root) {
         render();
         break;
       }
+      case 'q-target':
+        ui.form.qTarget = el.dataset.target;
+        render();
+        break;
       case 'q-submit':
         if (ui.form.qId) {
-          dispatch({ type: 'ASK', questionId: ui.form.qId, targetId: opponentIdOf(state, currentPlayerId(state)) });
+          dispatch({
+            type: 'ASK',
+            questionId: ui.form.qId,
+            targetId: ui.form.qTarget ?? opponentIdOf(state, currentPlayerId(state)),
+          });
         }
         break;
 
@@ -530,12 +556,24 @@ export function createApp(root) {
         }
         break;
 
+      case 'accuse-target':
+        // 대상이 바뀌면 고른 카드는 의미가 없으므로 비운다
+        ui.form.accuseTarget = el.dataset.target;
+        ui.form.accuseCardId = null;
+        render();
+        break;
       case 'accuse-pick':
         ui.form.accuseCardId = el.dataset.card;
         render();
         break;
       case 'accuse-submit':
-        if (ui.form.accuseCardId) dispatch({ type: 'ACCUSE', cardId: ui.form.accuseCardId });
+        if (ui.form.accuseCardId) {
+          dispatch({
+            type: 'ACCUSE',
+            cardId: ui.form.accuseCardId,
+            targetId: ui.form.accuseTarget ?? opponentIdOf(state, currentPlayerId(state)),
+          });
+        }
         break;
 
       case 'token-pick': {
@@ -554,15 +592,21 @@ export function createApp(root) {
         break;
 
       case 'open-pamphlet':
+        // 보드의 상대 패널에서 바로 그 사람의 노트를 열 수 있다
+        if (el.dataset.target) ui.form.noteTarget = el.dataset.target;
         ui.overlay = 'pamphlet';
         render();
         break;
+      case 'note-target':
+        ui.form.noteTarget = el.dataset.target;
+        render();
+        break;
       case 'mark':
-        cycleMark(ui.notes, ui.viewerId, opponentIdOf(state, ui.viewerId), el.dataset.card);
+        cycleMark(ui.notes, ui.viewerId, noteTargetOf(state), el.dataset.card);
         render();
         break;
       case 'clue-toggle':
-        toggleClue(ui.notes, ui.viewerId, opponentIdOf(state, ui.viewerId), Number(el.dataset.seq));
+        toggleClue(ui.notes, ui.viewerId, noteTargetOf(state), Number(el.dataset.seq));
         render();
         break;
 

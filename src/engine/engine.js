@@ -22,10 +22,30 @@ export const PHASES = [
   'RESULT',
 ];
 
-export const COINS_PER_PLAYER = 2;
+export const MAX_PLAYERS = 4;
 export const MAX_ACCUSE_FAILS = 3;
 export const TOKENS_PER_PENALTY = 2;
 export const MAX_LINE_LENGTH = 40;
+
+/**
+ * 거짓말 코인 개수.
+ *
+ * 인원이 늘면 답변할 기회도 그만큼 늘어난다. 2개 그대로 두면 대부분의 답이
+ * 진실로 확정되어 게임이 논리 퍼즐로 굳으므로, 3인 이상은 3개로 둔다.
+ * (2인 6~8회 답변에 2개 ≈ 4인 9~12회 답변에 3개)
+ */
+export const coinsFor = (playerCount) => (playerCount <= 2 ? 2 : 3);
+/** 2인전 하위 호환 */
+export const COINS_PER_PLAYER = 2;
+
+/**
+ * 판의 성격. 인원에 따라 승리 조건이 다르다.
+ *
+ *   duel     2인 — 지목에 성공하면 이긴다. 선공 보정으로 반격 턴이 있다 (D4)
+ *   survival 3~4인 — 지목당한 사람이 탈락하고, 마지막 한 명이 이긴다.
+ *            지목이 게임을 끝내지 않으므로 반격 턴은 없다.
+ */
+export const modeFor = (playerCount) => (playerCount <= 2 ? 'duel' : 'survival');
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
@@ -33,10 +53,17 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 
 export const currentPlayerId = (s) => s.order[s.currentIndex];
 export const currentPlayer = (s) => s.players[currentPlayerId(s)];
-export const opponentIdOf = (s, id) => s.order.find((p) => p !== id);
 export const playerCard = (s, id) => cardById(s.players[id].cardId);
 /** 선공 = 좌석 0 */
 export const isFirstSeat = (s, id) => s.order[0] === id;
+
+export const isEliminated = (s, id) => Boolean(s.players[id]?.eliminated);
+/** 아직 판에 남아 있는 사람들 (좌석 순서 유지) */
+export const alivePlayers = (s) => s.order.filter((id) => !s.players[id].eliminated);
+/** 내가 상대할 수 있는 사람들 — 탈락자는 빠진다 */
+export const opponentsOf = (s, id) => alivePlayers(s).filter((p) => p !== id);
+/** 2인전 편의용. 3인 이상에서는 opponentsOf 를 쓸 것 */
+export const opponentIdOf = (s, id) => opponentsOf(s, id)[0] ?? s.order.find((p) => p !== id);
 
 /**
  * 지목 실패로 실제 공개된 토큰 목록 (슬롯 인덱스 → 토큰)
@@ -73,9 +100,12 @@ export function dealCards(playerIds, rng = Math.random) {
  */
 export function createGame({ players, cards, firstIndex = 0 }) {
   if (players.length < 2) throw new Error('2인 이상 필요');
+  if (players.length > MAX_PLAYERS) throw new Error(`${MAX_PLAYERS}인까지만 가능하다`);
+  const coins = coinsFor(players.length);
   return {
-    rulesetVersion: '0.3',
+    rulesetVersion: '0.4',
     deckId: 'deck-v1',
+    mode: modeFor(players.length),
     phase: 'DEALING',
     order: players.map((p) => p.id),
     currentIndex: firstIndex,
@@ -88,10 +118,11 @@ export function createGame({ players, cards, firstIndex = 0 }) {
       kind: p.kind ?? 'human',
       seat: i,
       cardId: cards[p.id],
-      coinsLeft: COINS_PER_PLAYER,
+      coinsLeft: coins,
       revealedSlots: [],
       accuseFails: 0,
       ackedCard: false,
+      eliminated: false,
     }])),
     pending: null,
     log: [],
@@ -160,8 +191,11 @@ function ask(s, { questionId, targetId }) {
   const q = questionById(questionId);
   if (!q) throw new Error(`unknown question: ${questionId}`);
   const askerId = currentPlayerId(s);
+  // 3인 이상이면 누구에게 묻는지 반드시 지정한다. 2인이면 상대가 하나뿐이라 생략 가능
   const target = targetId ?? opponentIdOf(s, askerId);
+  if (!target || !s.players[target]) throw new Error('질문할 상대를 골라야 한다');
   if (target === askerId) throw new Error('자기 자신에게는 질문할 수 없다');
+  if (isEliminated(s, target)) throw new Error('이미 탈락한 사람에게는 물을 수 없다');
   s.pending = { askerId, targetId: target, questionId };
   s.phase = 'ANSWER_PENDING';
   return s;
@@ -220,50 +254,95 @@ function continueAfterReveal(s) {
   return endTurn(s);
 }
 
-function accuse(s, { cardId }) {
+function accuse(s, { cardId, targetId }) {
   expect(s, 'ACCUSE_SELECT');
   const accuserId = currentPlayerId(s);
-  const targetId = opponentIdOf(s, accuserId);
-  const hit = s.players[targetId].cardId === cardId;
+  const target = targetId ?? opponentIdOf(s, accuserId);
+  if (!target || !s.players[target]) throw new Error('지목할 상대를 골라야 한다');
+  if (target === accuserId) throw new Error('자기 자신은 지목할 수 없다');
+  if (isEliminated(s, target)) throw new Error('이미 탈락한 사람은 지목할 수 없다');
+
+  const hit = s.players[target].cardId === cardId;
   const wasCounterAttack = s.counterAttack;
 
   s.events.push({
     type: 'accuse',
     actorId: accuserId,
+    targetId: target,
     payload: { cardId, hit, counterAttack: wasCounterAttack },
     at: s.turnNumber,
   });
 
-  if (hit) {
-    if (wasCounterAttack) {
-      // 반격 턴에서 후공도 맞혔다 → 무승부 (D4)
-      return finish(s, 'draw', 'counter-attack-hit');
-    }
-    if (isFirstSeat(s, accuserId)) {
-      // 선공이 맞혔다 → 후공에게 마지막 1턴 (D4)
-      s.pendingWinner = accuserId;
-      s.counterAttack = true;
-      s.currentIndex = s.order.indexOf(targetId);
-      s.turnNumber += 1;
-      s.phase = 'ACTION_SELECT';
-      return s;
-    }
-    return finish(s, accuserId, 'accuse-hit');
+  if (hit) return accuseHit(s, accuserId, target, wasCounterAttack);
+  return accuseMiss(s, accuserId, target, wasCounterAttack);
+}
+
+function accuseHit(s, accuserId, targetId, wasCounterAttack) {
+  // ── 3~4인 서바이벌 — 지목당한 사람이 탈락한다. 게임은 계속된다 ──────
+  if (s.mode === 'survival') {
+    return eliminate(s, targetId, 'accused', accuserId);
   }
 
-  // 실패
+  // ── 2인전 — 지목에 성공하면 이긴다 (D4 반격 턴) ─────────────────────
+  if (wasCounterAttack) {
+    // 반격 턴에서 후공도 맞혔다 → 무승부
+    return finish(s, 'draw', 'counter-attack-hit');
+  }
+  if (isFirstSeat(s, accuserId)) {
+    // 선공이 맞혔다 → 후공에게 마지막 1턴
+    s.pendingWinner = accuserId;
+    s.counterAttack = true;
+    s.currentIndex = s.order.indexOf(targetId);
+    s.turnNumber += 1;
+    s.phase = 'ACTION_SELECT';
+    return s;
+  }
+  return finish(s, accuserId, 'accuse-hit');
+}
+
+function accuseMiss(s, accuserId, targetId, wasCounterAttack) {
   s.players[accuserId].accuseFails += 1;
 
   if (wasCounterAttack) {
-    // 후공이 반격 턴을 날렸다 → 선공 승리
+    // 후공이 반격 턴을 날렸다 → 선공 승리 (2인전 전용)
     return finish(s, s.pendingWinner, 'counter-attack-missed');
   }
+
   if (s.players[accuserId].accuseFails >= MAX_ACCUSE_FAILS) {
+    // 3회 실패 — 2인전이면 상대 승리, 서바이벌이면 본인 탈락
+    if (s.mode === 'survival') return eliminate(s, accuserId, 'fail-limit', null);
     return finish(s, targetId, 'accuse-fail-limit');
   }
 
   s.phase = 'PENALTY_TOKEN_SELECT';
   return s;
+}
+
+/**
+ * 탈락 처리 (서바이벌 전용).
+ *
+ * 탈락자의 카드는 전원에게 공개된다 — 남은 사람들의 후보가 한 장씩 줄어드는
+ * 큰 단서이며, 「누가 이미 밝혀졌는가」를 모두가 같은 기준으로 알게 된다.
+ */
+function eliminate(s, id, reason, byId) {
+  s.players[id].eliminated = true;
+  s.players[id].eliminatedAt = s.turnNumber;
+  s.events.push({
+    type: 'eliminate',
+    actorId: byId,
+    targetId: id,
+    payload: { reason, cardId: s.players[id].cardId },
+    at: s.turnNumber,
+  });
+
+  const alive = alivePlayers(s);
+  if (alive.length <= 1) {
+    return finish(s, alive[0] ?? 'draw', 'last-standing');
+  }
+
+  // 탈락시킨 사람의 턴은 여기서 끝난다.
+  // 스스로 탈락한 경우(3회 실패)에도 다음 사람으로 넘어간다.
+  return endTurn(s);
 }
 
 function revealTokens(s, { slots }) {
@@ -296,10 +375,16 @@ function revealTokens(s, { slots }) {
 
 function endTurn(s) {
   if (s.counterAttack) {
-    // 후공의 반격 턴이 지목 성공 없이 끝났다 → 선공 승리
+    // 후공의 반격 턴이 지목 성공 없이 끝났다 → 선공 승리 (2인전 전용)
     return finish(s, s.pendingWinner, 'counter-attack-expired');
   }
-  s.currentIndex = (s.currentIndex + 1) % s.order.length;
+  // 탈락자는 건너뛴다
+  let next = s.currentIndex;
+  for (let i = 0; i < s.order.length; i += 1) {
+    next = (next + 1) % s.order.length;
+    if (!s.players[s.order[next]].eliminated) break;
+  }
+  s.currentIndex = next;
   s.turnNumber += 1;
   s.phase = 'ACTION_SELECT';
   s.pending = null;
@@ -313,6 +398,10 @@ function finish(s, winner, reason) {
     winner,
     reason,
     cards: Object.fromEntries(s.order.map((id) => [id, s.players[id].cardId])),
+    // 탈락 순서 — 결과 화면에서 판이 어떻게 좁혀졌는지 되짚는 데 쓴다
+    eliminations: s.events
+      .filter((e) => e.type === 'eliminate')
+      .map((e) => ({ id: e.targetId, by: e.actorId, reason: e.payload.reason, at: e.at })),
     turns: s.turnNumber,
   };
   return s;
@@ -376,4 +465,10 @@ export const RESULT_REASON_TEXT = {
   'counter-attack-missed': '후공이 반격 턴 지목에 실패',
   'counter-attack-expired': '후공이 반격 턴을 지목에 쓰지 않았다',
   'accuse-fail-limit': `지목 ${MAX_ACCUSE_FAILS}회 실패`,
+  'last-standing': '마지막까지 정체를 지켰다',
+};
+
+export const ELIMINATION_REASON_TEXT = {
+  accused: '정체를 들켰다',
+  'fail-limit': `지목 ${MAX_ACCUSE_FAILS}회 실패`,
 };

@@ -10,12 +10,12 @@ import {
   questionById, cardById, evaluate, splitCount, ATTR_META, OPS, cutPointOf,
 } from '../../data/deck.js';
 import {
-  currentPlayerId, opponentIdOf, playerCard, revealedTokensOf,
-  actorOf, isFirstSeat, MAX_ACCUSE_FAILS, MAX_LINE_LENGTH, COINS_PER_PLAYER,
-  RESULT_REASON_TEXT,
+  currentPlayerId, opponentIdOf, opponentsOf, alivePlayers, playerCard, revealedTokensOf,
+  actorOf, coinsFor, MAX_ACCUSE_FAILS, MAX_LINE_LENGTH,
+  RESULT_REASON_TEXT, ELIMINATION_REASON_TEXT,
 } from '../engine/engine.js';
 import {
-  pamphletRows, remainingCards, appliedClues, isApplied, MARK_SYMBOL, markOf,
+  pamphletRows, remainingCards, remainingByTarget, appliedClues, isApplied, MARK_SYMBOL, markOf,
 } from './notes.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
@@ -24,7 +24,7 @@ export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
 
 const tokenRow = (tokens) => tokens.map((t) => `<span class="tok" title="${esc(t)} — ${esc(TOKEN_MEANING[t])}">${TOKEN_EMOJI[t]}</span>`).join('');
 
-const coinDots = (left, total = COINS_PER_PLAYER) =>
+const coinDots = (left, total = 2) =>
   Array.from({ length: total }, (_, i) => (i < left
     ? '<span class="coin coin-on">◉</span>'
     : '<span class="coin coin-off">◌</span>')).join('');
@@ -342,41 +342,34 @@ const WAITING_TEXT = {
 export function renderBoard(state, ui) {
   const viewerId = ui.viewerId;
   const me = state.players[viewerId];
-  const oppId = opponentIdOf(state, viewerId);
-  const opp = state.players[oppId];
   const myCard = playerCard(state, viewerId);
   const myTurn = currentPlayerId(state) === viewerId;
-  const actor = actorOf(state);
-  const iAmActor = actor === viewerId;
-  const remaining = remainingCards(ui.notes, state, viewerId);
-  const revealed = revealedTokensOf(state, oppId);
+  const iAmActor = actorOf(state) === viewerId;
+  const iAmOut = state.players[viewerId].eliminated;
 
-  const banner = state.counterAttack
-    ? `<div class="banner banner-alert">⚠ 마지막 기회 — ${esc(opp.nick)} 가 당신의 정체를 맞혔습니다.
-        ${myTurn ? '지금 맞히면 <strong>무승부</strong>, 질문에 이 턴을 쓰면 그대로 <strong>패배</strong>합니다.' : ''}</div>`
-    : '';
+  // 탈락자도 포함해 전원을 보여준다. 판이 어떻게 좁혀졌는지가 곧 단서다.
+  const others = state.order.filter((id) => id !== viewerId);
+  const remaining = remainingByTarget(ui.notes, state, viewerId);
+  const alive = alivePlayers(state);
+
+  const waitingNick = state.players[actorOf(state)]?.nick ?? '상대';
+  const banner = bannerFor(state, ui, myTurn, iAmOut);
 
   const status = iAmActor
     ? '<span class="turn-on">● 당신의 차례</span>'
-    : `<span class="turn-off">${esc((WAITING_TEXT[state.phase] ?? (() => '대기 중…'))(opp.nick))}</span>`;
-
-  const oppTokenSlots = Array.from({ length: 5 }, (_, i) => (
-    i < revealed.length
-      ? `<span class="tok">${TOKEN_EMOJI[revealed[i]]}</span>`
-      : '<span class="tok tok-hidden">▨</span>')).join('');
-
-  const fails = Array.from({ length: MAX_ACCUSE_FAILS }, (_, i) =>
-    (i < opp.accuseFails ? '<span class="fail fail-on">●</span>' : '<span class="fail">○</span>')).join('');
+    : `<span class="turn-off">${esc((WAITING_TEXT[state.phase] ?? (() => '대기 중…'))(waitingNick))}</span>`;
 
   const myFails = Array.from({ length: MAX_ACCUSE_FAILS }, (_, i) =>
     (i < me.accuseFails ? '<span class="fail fail-on">●</span>' : '<span class="fail">○</span>')).join('');
+
+  const canAct = myTurn && state.phase === 'ACTION_SELECT' && !iAmOut;
 
   return `
     <div class="screen screen-board">
       <header class="topbar">
         <span class="brand">이미테이션 게임</span>
         <span class="status">${status}</span>
-        <span class="turn-no">턴 ${state.turnNumber}</span>
+        <span class="turn-no">턴 ${state.turnNumber}${state.mode === 'survival' ? ` · ${alive.length}명 남음` : ''}</span>
         <button class="icon-btn" data-act="settings-open" aria-label="설정">⚙</button>
       </header>
 
@@ -388,20 +381,12 @@ export function renderBoard(state, ui) {
           ${dossier(myCard, { compact: true, label: `${esc(me.nick)} · 기밀` })}
           <div class="panel">
             <h4>거짓말 코인</h4>
-            <div class="coins">${coinDots(me.coinsLeft)}</div>
+            <div class="coins">${coinDots(me.coinsLeft, coinTotal(state))}</div>
             <p class="panel-note">${me.coinsLeft}개 남음</p>
           </div>
           <div class="panel">
             <h4>내 지목 실패</h4>
             <div class="fails">${myFails} <span class="panel-note">${me.accuseFails}/${MAX_ACCUSE_FAILS}</span></div>
-          </div>
-          <div class="panel">
-            <h4>남은 후보</h4>
-            <button class="remaining" data-act="open-pamphlet">
-              <span class="remaining-n">${remaining.length}</span>
-              <span class="remaining-of">/ ${DECK.length}</span>
-            </button>
-            <p class="panel-note">내 추리 노트 기준 · 상대에게 보이지 않음</p>
           </div>
         </aside>
 
@@ -411,33 +396,97 @@ export function renderBoard(state, ui) {
         </section>
 
         <aside class="col col-right">
-          <h3 class="col-title">상대 · ${esc(opp.nick)}</h3>
-          <div class="unknown-card">
-            <div class="unknown-mark">？</div>
-            <p>미확인</p>
-          </div>
-          <div class="panel">
-            <h4>거짓말 코인</h4>
-            <div class="coins">${coinDots(opp.coinsLeft)}</div>
-            <p class="panel-note">${opp.coinsLeft}개 남음</p>
-          </div>
-          <div class="panel">
-            <h4>공개된 토큰</h4>
-            <div class="tok-slots">${oppTokenSlots}</div>
-            <p class="panel-note">${revealed.length === 0 ? '아직 없음' : '지목 실패로 유출됨'}</p>
-          </div>
-          <div class="panel">
-            <h4>상대 지목 실패</h4>
-            <div class="fails">${fails} <span class="panel-note">${opp.accuseFails}/${MAX_ACCUSE_FAILS}</span></div>
-          </div>
+          <h3 class="col-title">상대 ${others.length > 1 ? `${others.length}명` : `· ${esc(state.players[others[0]].nick)}`}</h3>
+          <ul class="foe-list">
+            ${others.map((id) => foeCard(state, ui, id, remaining[id])).join('')}
+          </ul>
         </aside>
       </div>
 
       <footer class="actionbar">
-        <button class="btn btn-primary" data-act="open-question" ${myTurn && state.phase === 'ACTION_SELECT' ? '' : 'disabled'}>질 문 하 기</button>
-        <button class="btn btn-danger" data-act="open-accuse" ${myTurn && state.phase === 'ACTION_SELECT' ? '' : 'disabled'}>이 름 지 목</button>
+        <button class="btn btn-primary" data-act="open-question" ${canAct ? '' : 'disabled'}>질 문 하 기</button>
+        <button class="btn btn-danger" data-act="open-accuse" ${canAct ? '' : 'disabled'}>이 름 지 목</button>
         <button class="btn btn-ghost" data-act="open-pamphlet">📋 팜플렛<span class="hide-narrow"> · 추리노트</span></button>
       </footer>
+    </div>`;
+}
+
+/** 이 판에서 한 사람이 갖고 시작한 코인 수 (2인 2개 · 3~4인 3개) */
+const coinTotal = (state) => coinsFor(state.order.length);
+
+function bannerFor(state, ui, myTurn, iAmOut) {
+  if (iAmOut) {
+    return `<div class="banner banner-out">당신은 탈락했습니다. 남은 사람들의 대결을 지켜봅니다.</div>`;
+  }
+  if (state.counterAttack) {
+    const foe = state.players[opponentIdOf(state, ui.viewerId)];
+    return `<div class="banner banner-alert">⚠ 마지막 기회 — ${esc(foe.nick)} 가 당신의 정체를 맞혔습니다.
+      ${myTurn ? '지금 맞히면 <strong>무승부</strong>, 질문에 이 턴을 쓰면 그대로 <strong>패배</strong>합니다.' : ''}</div>`;
+  }
+  // 방금 누가 탈락했는지 알린다
+  const last = [...state.events].reverse().find((e) => e.type === 'eliminate');
+  if (last && last.at >= state.turnNumber - 1) {
+    const who = state.players[last.targetId];
+    const card = cardById(last.payload.cardId);
+    return `<div class="banner banner-drop">☠ ${esc(who.nick)} 탈락 —
+      정체는 <strong>${esc(card?.name ?? '?')}</strong> 였습니다. 후보에서 지워집니다.</div>`;
+  }
+  return '';
+}
+
+/** 상대 한 명의 패널 */
+function foeCard(state, ui, id, remaining) {
+  const p = state.players[id];
+  const revealed = revealedTokensOf(state, id);
+  const card = p.eliminated ? cardById(p.cardId) : null;
+  const isTurn = currentPlayerId(state) === id && !p.eliminated;
+
+  const slots = Array.from({ length: 5 }, (_, i) => (
+    i < revealed.length
+      ? `<span class="tok">${TOKEN_EMOJI[revealed[i]]}</span>`
+      : '<span class="tok tok-hidden">▨</span>')).join('');
+
+  const fails = Array.from({ length: MAX_ACCUSE_FAILS }, (_, i) =>
+    (i < p.accuseFails ? '<span class="fail fail-on">●</span>' : '<span class="fail">○</span>')).join('');
+
+  return `
+    <li class="foe${p.eliminated ? ' foe-out' : ''}${isTurn ? ' foe-turn' : ''}">
+      <div class="foe-head">
+        <span class="foe-mark">${p.eliminated ? '☠' : '？'}</span>
+        <span class="foe-nick">${esc(p.nick)}</span>
+        ${p.eliminated
+          ? `<span class="foe-tag">탈락 · ${esc(card?.name ?? '?')}</span>`
+          : `<button class="foe-remaining" data-act="open-pamphlet" data-target="${id}"
+               title="이 사람에 대한 추리 노트 열기">후보 ${remaining ?? DECK.length}</button>`}
+      </div>
+      ${p.eliminated ? '' : `
+      <div class="foe-rows">
+        <span class="foe-row"><em>코인</em> <span class="coins">${coinDots(p.coinsLeft, coinTotal(state))}</span></span>
+        <span class="foe-row"><em>토큰</em> <span class="tok-slots">${slots}</span></span>
+        <span class="foe-row"><em>실패</em> <span class="fails">${fails}</span></span>
+      </div>`}
+    </li>`;
+}
+
+
+/**
+ * 대상 선택 칩 — 3인 이상에서 「누구에게」를 고른다.
+ * 2인전에서는 상대가 하나뿐이라 아무것도 그리지 않는다 (클릭 한 번을 아낀다).
+ */
+function targetChips(state, ui, selectedId, act, { remaining = null } = {}) {
+  const foes = opponentsOf(state, ui.viewerId);
+  if (foes.length <= 1) return '';
+  return `
+    <div class="target-pick">
+      <span class="target-label">누구에게</span>
+      <div class="target-chips">
+        ${foes.map((id) => `
+          <button class="target-chip${id === selectedId ? ' target-chip-on' : ''}"
+            data-act="${act}" data-target="${id}">
+            ${esc(state.players[id].nick)}
+            ${remaining ? `<em>후보 ${remaining[id]}</em>` : ''}
+          </button>`).join('')}
+      </div>
     </div>`;
 }
 
@@ -534,7 +583,10 @@ export function renderQuestionModal(state, ui) {
   const group = ui.form.qGroup;
   const options = QUESTIONS.filter((q) => q.group === group);
   const picked = options.find((q) => q.id === ui.form.qId) ?? null;
-  const remaining = remainingCards(ui.notes, state, ui.viewerId);
+  const targetId = ui.form.qTarget ?? opponentIdOf(state, ui.viewerId);
+  const remaining = remainingCards(ui.notes, state, ui.viewerId, targetId);
+  const byTarget = remainingByTarget(ui.notes, state, ui.viewerId);
+  const targetNick = state.players[targetId]?.nick ?? '상대';
 
   const tabs = QUESTION_GROUPS.map((g) =>
     `<button class="tab${g === group ? ' tab-on' : ''}" data-act="q-group" data-group="${esc(g)}">${esc(g)}</button>`).join('');
@@ -553,18 +605,19 @@ export function renderQuestionModal(state, ui) {
   if (picked && ui.settings.splitHint) {
     const { yes, no } = splitCount(remaining, picked);
     hint = (yes === 0 || no === 0)
-      ? `<p class="q-hint q-hint-warn">남은 후보 ${remaining.length}명을 전혀 가르지 못합니다 — 이미 아는 정보입니다.</p>`
-      : `<p class="q-hint">남은 후보 ${remaining.length}명을 <strong>${yes} : ${no}</strong> 으로 가릅니다.</p>`;
+      ? `<p class="q-hint q-hint-warn">${esc(targetNick)} 의 남은 후보 ${remaining.length}명을 전혀 가르지 못합니다 — 이미 아는 정보입니다.</p>`
+      : `<p class="q-hint">${esc(targetNick)} 의 남은 후보 ${remaining.length}명을 <strong>${yes} : ${no}</strong> 으로 가릅니다.</p>`;
   }
 
   return `
     <div class="overlay">
       <div class="modal" data-stop>
         <header class="modal-head">
-          <h2>무엇을 물어보시겠습니까?</h2>
+          <h2>${opponentsOf(state, ui.viewerId).length > 1 ? '누구에게 무엇을 물어보시겠습니까?' : '무엇을 물어보시겠습니까?'}</h2>
           <button class="icon-btn" data-act="cancel" aria-label="닫기">✕</button>
         </header>
         <div class="modal-body">
+          ${targetChips(state, ui, targetId, 'q-target', { remaining: byTarget })}
           <div class="tabs">${tabs}</div>
           <div class="choices">${chooser}</div>
           <div class="q-preview">${picked ? `"${esc(picked.text)}"` : '<span class="muted">질문을 고르세요</span>'}</div>
@@ -646,21 +699,35 @@ export function renderAnswerModal(state, ui) {
 
 export function renderPamphlet(state, ui) {
   const viewerId = ui.viewerId;
-  const oppId = opponentIdOf(state, viewerId);
-  const rows = pamphletRows(ui.notes, state, viewerId);
+  const foes = opponentsOf(state, viewerId);
+  const oppId = foes.includes(ui.form.noteTarget) ? ui.form.noteTarget : (foes[0] ?? opponentIdOf(state, viewerId));
+  const rows = pamphletRows(ui.notes, state, viewerId, oppId);
   const remaining = rows.filter((r) => !r.out).length;
-  const clues = appliedClues(ui.notes, state, viewerId);
+  const byTarget = remainingByTarget(ui.notes, state, viewerId);
 
-  const body = rows.map(({ card, mark, bySelf, byClue, byToken, out }) => {
+  // 3인 이상이면 「누구에 대한 노트인가」 탭이 필요하다. 노트는 상대별로 따로 관리된다
+  const noteTabs = foes.length <= 1 ? '' : `
+    <div class="note-tabs">
+      ${foes.map((id) => `
+        <button class="note-tab${id === oppId ? ' note-tab-on' : ''}"
+          data-act="note-target" data-target="${id}">
+          ${esc(state.players[id].nick)}<em>${byTarget[id]}</em>
+        </button>`).join('')}
+    </div>`;
+
+  const body = rows.map(({ card, mark, bySelf, byGone, byClue, byToken, out }) => {
     const p = PAMPHLET.find((x) => x.id === card.id);
-    const cls = [out ? 'row-out' : '', byClue ? 'row-clue' : '', byToken ? 'row-token' : '', bySelf ? 'row-self' : ''].filter(Boolean).join(' ');
+    const cls = [out ? 'row-out' : '', byClue ? 'row-clue' : '', byToken ? 'row-token' : '',
+      bySelf || byGone ? 'row-self' : ''].filter(Boolean).join(' ');
     return `
       <tr class="${cls}">
         <td class="c-mark">
           ${bySelf
             ? '<span class="mark mark-self" title="당신의 카드입니다 — 상대일 수 없습니다">나</span>'
-            : `<button class="mark mark-${mark}" data-act="mark" data-card="${card.id}"
-                 title="○ 미판정 → ✕ 제외 → ● 유력">${MARK_SYMBOL[mark]}</button>`}
+            : byGone
+              ? '<span class="mark mark-self" title="이미 탈락해 정체가 밝혀진 카드입니다">☠</span>'
+              : `<button class="mark mark-${mark}" data-act="mark" data-card="${card.id}"
+                   title="○ 미판정 → ✕ 제외 → ● 유력">${MARK_SYMBOL[mark]}</button>`}
         </td>
         <td class="c-name">${esc(card.name)}${byToken ? '<span class="row-why" title="공개된 토큰과 맞지 않음">🪙</span>' : ''}</td>
         <td>${p.heightLabel}</td>
@@ -692,11 +759,12 @@ export function renderPamphlet(state, ui) {
     <div class="overlay overlay-wide">
       <div class="modal modal-pamphlet" data-stop>
         <header class="modal-head">
-          <h2>📋 술집 참가자 명단 — 기밀</h2>
+          <h2>📋 명단 — ${esc(state.players[oppId]?.nick ?? '상대')} 추리</h2>
           <span class="remaining-badge">남은 후보 ${remaining} / ${DECK.length}</span>
           <button class="icon-btn" data-act="close-overlay" aria-label="닫기">✕</button>
         </header>
         <div class="modal-body pamphlet-body">
+          ${noteTabs}
           <table class="pamphlet">
             <thead>
               <tr>
@@ -725,12 +793,14 @@ export function renderPamphlet(state, ui) {
 
 export function renderAccuseModal(state, ui) {
   const viewerId = ui.viewerId;
-  const oppId = opponentIdOf(state, viewerId);
-  const opp = state.players[oppId];
+  const targetId = ui.form.accuseTarget ?? opponentIdOf(state, viewerId);
+  const opp = state.players[targetId];
   const me = state.players[viewerId];
-  const rows = pamphletRows(ui.notes, state, viewerId);
+  const rows = pamphletRows(ui.notes, state, viewerId, targetId);
+  const byTarget = remainingByTarget(ui.notes, state, viewerId);
   const picked = ui.form.accuseCardId;
   const pickedCard = picked ? cardById(picked) : null;
+  const survival = state.mode === 'survival';
 
   const grid = rows.map(({ card, out, mark, bySelf }) => `
     <button class="name-card${out ? ' name-out' : ''}${picked === card.id ? ' name-on' : ''}"
@@ -749,18 +819,22 @@ export function renderAccuseModal(state, ui) {
           <button class="icon-btn" data-act="cancel" aria-label="닫기">✕</button>
         </header>
         <div class="modal-body">
+          ${targetChips(state, ui, targetId, 'accuse-target', { remaining: byTarget })}
           <div class="name-grid">${grid}</div>
+          ${survival ? `<p class="accuse-note">맞히면 <strong>${esc(opp.nick)} 가 탈락</strong>하고 그 정체가 전원에게 공개됩니다.</p>` : ''}
           <p class="accuse-warn${last ? ' accuse-warn-last' : ''}">
             ⚠ 실패하면 당신의 고유 토큰 2개를 공개해야 합니다.
             현재 실패 <strong>${me.accuseFails} / ${MAX_ACCUSE_FAILS}</strong>
-            ${last ? '— <strong>이번에 틀리면 패배합니다.</strong>' : `— ${MAX_ACCUSE_FAILS}회째엔 패배.`}
+            ${last
+              ? `— <strong>이번에 틀리면 ${survival ? '당신이 탈락합니다' : '패배합니다'}.</strong>`
+              : `— ${MAX_ACCUSE_FAILS}회째엔 ${survival ? '탈락' : '패배'}.`}
           </p>
           ${state.counterAttack ? '<p class="accuse-warn accuse-warn-last">이것은 반격 턴입니다. 맞히면 무승부, 틀리면 패배합니다.</p>' : ''}
         </div>
         <footer class="modal-foot modal-foot-2">
           <button class="btn btn-ghost" data-act="cancel">취소</button>
           <button class="btn btn-danger" data-act="accuse-submit" ${picked ? '' : 'disabled'}>
-            ${pickedCard ? `${esc(pickedCard.name)} 라고 지목` : '지목한다'}
+            ${pickedCard ? `${esc(opp.nick)} 는 ${esc(pickedCard.name)}` : '지목한다'}
           </button>
         </footer>
       </div>
@@ -808,18 +882,50 @@ export function renderPenaltyModal(state, ui) {
 
 export function renderResult(state, ui) {
   const viewerId = ui.viewerId;
-  const oppId = opponentIdOf(state, viewerId);
   const r = state.result;
-  const myCard = cardById(r.cards[viewerId]);
-  const oppCard = cardById(r.cards[oppId]);
-  const opp = state.players[oppId];
   const me = state.players[viewerId];
+  const survival = state.mode === 'survival';
 
   const headline = r.winner === 'draw' ? '무 승 부' : (r.winner === viewerId ? '승      리' : '패      배');
   const cls = r.winner === 'draw' ? 'draw' : (r.winner === viewerId ? 'win' : 'lose');
 
-  const coinSummary = [me, opp].map((p) => {
-    const used = COINS_PER_PLAYER - p.coinsLeft;
+  // 탈락 순서를 그대로 읽어 준다 — 판이 어떻게 좁혀졌는지가 복기의 뼈대다
+  const order = r.eliminations ?? [];
+  const story = survival && order.length > 0
+    ? `<ol class="drop-list">${order.map((e) => {
+        const who = state.players[e.id];
+        const card = cardById(r.cards[e.id]);
+        const by = e.by ? state.players[e.by] : null;
+        return `<li><strong>${esc(who.nick)}</strong> · ${esc(card?.name ?? '?')}
+          <span class="muted">— ${by ? `${esc(by.nick)} 에게 들킴` : esc(ELIMINATION_REASON_TEXT[e.reason] ?? e.reason)} (턴 ${e.at})</span></li>`;
+      }).join('')}</ol>`
+    : '';
+
+  const subtitle = survival
+    ? (r.winner === 'draw'
+        ? '아무도 살아남지 못했습니다'
+        : `<strong>${esc(state.players[r.winner]?.nick ?? '?')}</strong> 가 끝까지 정체를 지켰습니다`)
+    : (() => {
+        const oppId = opponentIdOf(state, viewerId);
+        const oppCard = cardById(r.cards[oppId]);
+        return `${esc(state.players[oppId].nick)} 의 정체는 <strong>${esc(oppCard.name)}</strong> 였습니다`;
+      })();
+
+  const cards = state.order.map((id) => {
+    const p = state.players[id];
+    const card = cardById(r.cards[id]);
+    const tag = id === viewerId ? '나' : (id === r.winner ? '승자' : (p.eliminated ? '탈락' : '상대'));
+    return `
+      <div class="result-card${id === r.winner ? ' result-card-win' : ''}">
+        <h3>${esc(p.nick)} ${id === viewerId ? '<span class="muted">(나)</span>' : ''}</h3>
+        ${dossier(card, { compact: true, label: tag })}
+      </div>`;
+  }).join('');
+
+  const total = coinTotal(state);
+  const coinSummary = state.order.map((id) => {
+    const p = state.players[id];
+    const used = total - p.coinsLeft;
     return `<li>${esc(p.nick)} — 코인 ${used === 0 ? '한 개도 쓰지 않았습니다' : `${used}개 사용`}</li>`;
   }).join('');
 
@@ -827,20 +933,13 @@ export function renderResult(state, ui) {
     <div class="screen screen-result">
       <header class="result-head result-${cls}">
         <h1>${headline}</h1>
-        <p>${esc(opp.nick)} 의 정체는 <strong>${esc(oppCard.name)}</strong> 였습니다</p>
+        <p>${subtitle}</p>
         <p class="result-reason">${esc(RESULT_REASON_TEXT[r.reason] ?? r.reason)} · 총 ${r.turns}턴</p>
       </header>
 
-      <div class="result-cards">
-        <div class="result-card">
-          <h3>${esc(me.nick)} <span class="muted">(나)</span></h3>
-          ${dossier(myCard, { compact: true, label: '나' })}
-        </div>
-        <div class="result-card">
-          <h3>${esc(opp.nick)}</h3>
-          ${dossier(oppCard, { compact: true, label: '상대' })}
-        </div>
-      </div>
+      <div class="result-cards">${cards}</div>
+
+      ${story ? `<section class="replay"><h3>탈락 순서</h3>${story}</section>` : ''}
 
       <section class="replay">
         <h3>심문 기록 복기 <span class="muted">↑ 위 카드와 대조해 직접 확인하세요</span></h3>

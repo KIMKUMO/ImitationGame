@@ -9,7 +9,7 @@
  */
 
 import { DECK, questionById, evaluate } from '../../data/deck.js';
-import { revealedTokensOf, filterByRevealedTokens, opponentIdOf } from '../engine/engine.js';
+import { revealedTokensOf, filterByRevealedTokens, opponentsOf } from '../engine/engine.js';
 
 export const MARKS = ['unknown', 'out', 'likely'];
 export const MARK_SYMBOL = { unknown: '○', out: '✕', likely: '●' };
@@ -50,13 +50,16 @@ export function cycleMark(notes, myId, targetId, cardId) {
  * 플레이어가 직접 해제한(released) 단서는 다시 적용하지 않는다.
  */
 export function syncAutoApply(notes, state, myId) {
-  const targetId = opponentIdOf(state, myId);
-  const s = slot(notes, myId, targetId);
-  for (const e of state.log) {
-    if (e.targetId !== targetId) continue;
-    if (e.usedCoin) continue;
-    if (s.applied.includes(e.seq) || s.released.includes(e.seq)) continue;
-    s.applied.push(e.seq);
+  // 질문과 답변은 전원이 본다 — 상대 각각의 노트에 자동 반영한다
+  for (const targetId of state.order) {
+    if (targetId === myId) continue;
+    const s = slot(notes, myId, targetId);
+    for (const e of state.log) {
+      if (e.targetId !== targetId) continue;
+      if (e.usedCoin) continue;
+      if (s.applied.includes(e.seq) || s.released.includes(e.seq)) continue;
+      s.applied.push(e.seq);
+    }
   }
 }
 
@@ -78,8 +81,7 @@ export function toggleClue(notes, myId, targetId, seq) {
 }
 
 /** 적용된 단서 목록 (로그 항목 그대로) */
-export function appliedClues(notes, state, myId) {
-  const targetId = opponentIdOf(state, myId);
+export function appliedClues(notes, state, myId, targetId) {
   const s = slot(notes, myId, targetId);
   return state.log.filter((e) => e.targetId === targetId && s.applied.includes(e.seq));
 }
@@ -97,32 +99,52 @@ export function contradictsClues(card, clues) {
  *   byToken — 지목 실패로 공개된 토큰은 사실이다
  *   byClue  — 플레이어가 직접 적용한 단서 (코인 답변은 자동 적용되지 않는다)
  *
- * @returns {{card, mark, bySelf:boolean, byClue:boolean, byToken:boolean, out:boolean}[]}
+ *   byGone  — 이미 탈락해 카드가 공개된 사람의 카드 (서바이벌)
+ *
+ * @returns {{card, mark, bySelf:boolean, byGone:boolean, byClue:boolean, byToken:boolean, out:boolean}[]}
  */
-export function pamphletRows(notes, state, myId) {
-  const targetId = opponentIdOf(state, myId);
-  const clues = appliedClues(notes, state, myId);
+export function pamphletRows(notes, state, myId, targetId) {
+  const clues = appliedClues(notes, state, myId, targetId);
   const revealed = revealedTokensOf(state, targetId);
   const tokenSurvivors = new Set(filterByRevealedTokens(DECK, revealed).map((c) => c.id));
   const myCardId = state.players[myId].cardId;
 
+  // 탈락자의 카드는 전원에게 공개된다 → 남은 사람의 후보에서 빠진다
+  const goneCards = new Set(
+    state.order
+      .filter((id) => id !== targetId && state.players[id].eliminated && state.players[id].cardId)
+      .map((id) => state.players[id].cardId),
+  );
+
   return DECK.map((card) => {
     const mark = markOf(notes, myId, targetId, card.id);
     const bySelf = card.id === myCardId;
+    const byGone = goneCards.has(card.id);
     const byClue = contradictsClues(card, clues);
     const byToken = !tokenSurvivors.has(card.id);
-    return { card, mark, bySelf, byClue, byToken, out: mark === 'out' || bySelf || byClue || byToken };
+    return {
+      card, mark, bySelf, byGone, byClue, byToken,
+      out: mark === 'out' || bySelf || byGone || byClue || byToken,
+    };
   });
 }
 
-/** 남은 후보 수 (화면 4 좌측 · 화면 5 분할 안내의 기준) */
-export function remainingCards(notes, state, myId) {
-  return pamphletRows(notes, state, myId).filter((r) => !r.out).map((r) => r.card);
+/** 특정 상대에 대한 남은 후보 (화면 5 분할 안내의 기준) */
+export function remainingCards(notes, state, myId, targetId) {
+  return pamphletRows(notes, state, myId, targetId).filter((r) => !r.out).map((r) => r.card);
+}
+
+/** 상대별 남은 후보 수 — 화면 4 좌측과 우측 패널에 쓴다 */
+export function remainingByTarget(notes, state, myId) {
+  const out = {};
+  for (const id of opponentsOf(state, myId)) {
+    out[id] = remainingCards(notes, state, myId, id).length;
+  }
+  return out;
 }
 
 /** 코인이 쓰였지만 아직 적용하지 않은 단서 — 「검증 불가」 배지를 달아 직접 고르게 한다 */
-export function unappliedCoinClues(notes, state, myId) {
-  const targetId = opponentIdOf(state, myId);
+export function unappliedCoinClues(notes, state, myId, targetId) {
   const s = slot(notes, myId, targetId);
   return state.log.filter((e) => e.targetId === targetId && e.usedCoin && !s.applied.includes(e.seq));
 }
