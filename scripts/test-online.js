@@ -378,7 +378,7 @@ console.log('\n4인 서바이벌');
   });
 
   for (const c of four) await c.connect(CODE4);
-  await until(() => four.every((c) => c.room), '4인 전원 방 정보 수신');
+  await until(() => four.every((c) => c.room?.players.length === 4), '4인 전원 방 정보 수신');
   check('대기실에 네 명이 모인다', () => eq(four[0].room.players.length, 4));
 
   for (const c of four) c.send({ type: 'ready', ready: true });
@@ -435,7 +435,8 @@ console.log('\n4인 서바이벌');
   });
 
   victim.act({ type: 'ANSWER', usedCoin: false });
-  await until(() => four[0].state.log.length === 1, '답변 기록');
+  // 브로드캐스트는 사람마다 도착 시각이 다르다 — 네 명분을 모두 기다린 뒤에 본다
+  await until(() => four.every((c) => c.state.log.length === 1), '네 명 모두 답변 기록 수신');
   check('★ 질문과 답변을 네 명 모두가 본다 (전원 공개)', () => {
     for (const c of four) eq(c.state.log.length, 1, `${c.name} 이 로그를 못 봤다`);
     const first = JSON.stringify(four[0].state.log);
@@ -455,7 +456,7 @@ console.log('\n4인 서바이벌');
   accuser.act({ type: 'OPEN_ACCUSE' });
   await until(() => four[0].state.phase === 'ACCUSE_SELECT', '지목 화면');
   accuser.act({ type: 'ACCUSE', targetId: goneId, cardId: goneCard });
-  await until(() => four[0].state.players[goneId].eliminated, '탈락 처리');
+  await until(() => four.every((c) => c.state.players[goneId].eliminated), '네 명 모두 탈락 처리 수신');
 
   check('★ 지목 성공 → 그 사람만 탈락하고 게임은 계속된다', () => {
     eq(four[0].state.phase, 'ACTION_SELECT');
