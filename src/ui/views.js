@@ -82,7 +82,7 @@ export function renderLobby(ui) {
           </button>
           <button class="mode mode-off" disabled>
             <span class="mode-name">온라인 대전 <em>준비 중</em></span>
-            <span class="mode-desc">Firebase 연동 — M2 에서 열린다</span>
+            <span class="mode-desc">Cloudflare Durable Objects — M2 에서 열린다</span>
           </button>
         </div>
 
@@ -109,7 +109,10 @@ const RULE_PAGES = [
   {
     title: '질문',
     body: `
-      <p>질문은 <strong>12종으로 고정</strong>되어 있다. 키·몸무게·나이·소속·술만 물을 수 있다.</p>
+      <p>질문은 <strong>고정된 목록</strong>에서 고른다. 키·몸무게·나이·소속·술만 물을 수 있다.</p>
+      <p>키·몸무게·나이는 <strong>이상과 이하 양쪽</strong>으로 물을 수 있다. 다만 임계값은
+         <strong>구간 경계</strong>에만 놓인다 — 팜플렛에 구간만 적혀 있어서, 경계가 아닌 값으로 물으면
+         답을 들어도 그 구간 안의 누구를 지울지 알 수 없기 때문이다.</p>
       <p><strong>이름과 고유 토큰은 물을 수 없다.</strong> 질문 목록에 항목 자체가 없다.</p>
       <p>한 턴에 질문은 한 번. <strong>이미 물었던 질문도 다시 물을 수 있다</strong> —
          상대가 코인을 쓴 답을 검증할 유일한 방법이다.</p>`,

@@ -2,7 +2,7 @@
 
 > 술집에 모인 스파이 후보생들이 서로에게 예/아니오 질문을 던져, 상대가 누구인지 먼저 알아맞히는 심리 추리 대결
 
-**▶ 플레이: https://kimkumo.github.io/ImitationGame/**
+**배포: Cloudflare Workers (Static Assets) · `npm run deploy`**
 
 기획: [`GDD.md`](GDD.md) · 덱 검증 리포트: [`DECK.md`](DECK.md)
 
@@ -14,9 +14,9 @@
 |---|---|
 | **M0. 덱 확정** | ✅ 15장 데이터 + C1~C4 검증 + 완전 탐색 |
 | **M1. 로컬 프로토타입** | ✅ **이 저장소의 현재 상태** — 규칙 전체 구동, 화면 1~10 |
-| **M2. Firebase 연동** | ⬜ 다음 작업 → [`firebase/`](firebase/) · [`src/net/firebase.js`](src/net/firebase.js) |
+| **M2. 온라인 대전** | ⬜ 다음 작업 → Durable Objects + WebSocket ([`src/net/cloudflare.js`](src/net/cloudflare.js)) |
 | M3. 아트 · 사운드 | ⬜ 초상 15장, 토큰에 맞춘 캐릭터 설정 집필 |
-| M4. 강화 | ⬜ Cloud Functions 권위 판정, 재접속, 관전 |
+| M4. 강화 | ⬜ 재접속, 관전, 자유 대사 모더레이션 |
 | M5. 4인 확장 | ⬜ |
 
 **네트워크 없이 규칙 전체가 돌아간다.** 두 가지 모드로 플레이할 수 있다.
@@ -30,12 +30,20 @@
 ## 개발
 
 ```bash
-npm start          # http://localhost:5173  (의존성 없음, node 18+)
+npm install        # wrangler 하나뿐 (개발 의존성)
+
 npm test           # 덱 검증 + 엔진 검증
-npm run validate   # 덱 제약 C1~C4 + 최적 결정 트리 완전 탐색
+npm run validate   # 덱 제약 C1~C5 + 최적 결정 트리 완전 탐색
+
+npm start          # http://localhost:5173  — 의존성 없는 정적 서버 (빠른 확인용)
+npm run preview    # 빌드 후 wrangler dev — 실제 Cloudflare 런타임으로 확인
+npm run check      # 테스트 + 빌드 + 배포 드라이런 (배포 전 점검)
+npm run deploy     # 테스트 + 빌드 + wrangler deploy
 ```
 
-의존성이 하나도 없다. 빌드 단계도 없다. 브라우저가 ESM 을 그대로 읽는다.
+**번들러도 트랜스파일도 없다.** 브라우저가 ESM 을 그대로 읽는다.
+`npm run build` 는 `dist/` 에 브라우저가 요청하는 파일만 모을 뿐이다 (10개 파일 · 128 KB).
+저장소 루트를 그대로 올리지 않는 이유는 `node_modules` 와 테스트 스크립트까지 딸려 가기 때문이다.
 
 ### 구조
 
@@ -43,28 +51,28 @@ npm run validate   # 덱 제약 C1~C4 + 최적 결정 트리 완전 탐색
 index.html            엔트리 (정적)
 data/
   deck.js             ★ 캐릭터 15장 · 구간 체계 · 질문 18종 — 단일 원본
-  validate-deck.js    덱 제약 C0~C4 검증 + 완전 탐색
+  validate-deck.js    덱 제약 C0~C5 검증 + 완전 탐색
 src/
   engine/
     engine.js         ★ 룰 엔진 (순수 함수). DOM·네트워크 의존 없음
     bot.js            연습용 봇
   net/
     transport.js      전송 계층 인터페이스 + LocalTransport
-    firebase.js       ⬜ M2 에서 채울 자리 (스키마·체크리스트 주석)
+    cloudflare.js     ⬜ M2 에서 채울 자리 (Durable Object 설계·체크리스트 주석)
   ui/
     app.js            화면 전환 · 이벤트 위임 · 기기 넘기기 가드 · 봇 구동
     views.js          화면 1~10 렌더러 (상태 → HTML)
     notes.js          추리 노트 (개인 메모, 서버에 올라가지 않음)
 styles/main.css       아트 디렉션
-firebase/
-  database.rules.json ⬜ M2 에 그대로 배포할 보안 규칙
+wrangler.jsonc        Cloudflare Workers 설정 (정적 자산 전용)
 scripts/
-  test-engine.js      엔진 검증 24건
-  serve.js            개발용 정적 서버
+  test-engine.js      엔진 검증 28건
+  build.js            dist/ 에 배포 파일 모으기
+  serve.js            개발용 정적 서버 (wrangler 없이 빠르게 볼 때)
 ```
 
 **엔진과 UI가 완전히 분리되어 있다.** `src/engine/engine.js` 는 상태와 액션만 다루고 DOM 을 모른다.
-`LocalTransport` 를 `FirebaseTransport` 로 바꿔 끼우면 UI 는 손대지 않아도 된다.
+`LocalTransport` 를 `CloudflareTransport` 로 바꿔 끼우면 UI 는 손대지 않아도 된다.
 
 ---
 
@@ -165,23 +173,45 @@ GDD 10장의 미결 사항 중, **이 빌드로 확인해야 할 것**들이다.
 
 ---
 
-## M2 — Firebase 연동 (다음 작업)
+## 배포 — Cloudflare Workers
 
-붙일 자리는 전부 비워두고 표시해 두었다.
+정적 자산 전용 Worker 다. Worker 스크립트가 없으므로 정적 요청은 자산 시스템이 바로 처리한다.
 
-1. Firebase 프로젝트 생성 → 웹 앱 등록 → **익명 인증** 활성화
-2. **Realtime Database** 생성 (Firestore 아님 — `deck/taken` 트릭이 RTDB 의 `!data.exists()` 규칙에 의존한다)
-3. [`firebase/database.rules.json`](firebase/database.rules.json) 배포 — `firebase deploy --only database`
-4. [`src/net/firebase.js`](src/net/firebase.js) 의 `FIREBASE_CONFIG` 채우고 `FirebaseTransport` 구현
-5. `src/ui/app.js` 의 전송 계층 생성부에서 온라인 모드 분기 연결
+```bash
+npm run check    # 테스트 + 빌드 + 드라이런 — 배포 전 점검
+npm run deploy   # 실제 배포
+```
 
-`src/net/firebase.js` 에 스키마 대응표와 액션별 write 경로를 주석으로 남겨두었다.
-**지켜야 할 비밀은 `secret/{uid}/cardId` 하나뿐이다.**
+**최초 1회 인증이 필요하다.** 둘 중 하나를 쓰면 된다.
+
+```bash
+npx wrangler login                  # 브라우저 OAuth (로컬 개발 머신)
+# 또는 CI·헤드리스 환경
+export CLOUDFLARE_API_TOKEN=...     # Workers Scripts:Edit 권한 토큰
+export CLOUDFLARE_ACCOUNT_ID=...
+```
+
+`compatibility_date` 는 wrangler 에 들어 있는 workerd 가 지원하는 최신 날짜에 맞춰야 한다.
+더 뒤로 잡으면 `wrangler dev` 가 런타임을 띄우지 못한다.
 
 ---
 
-## 배포
+## M2 — 온라인 대전 (다음 작업)
 
-`main` 또는 개발 브랜치에 push 하면 GitHub Actions 가 GitHub Pages 로 자동 배포한다
-([`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml)).
-빌드 단계가 없어 저장소 내용이 그대로 올라간다.
+**방 하나 = Durable Object 인스턴스 하나 + WebSocket.**
+
+DO 는 단일 스레드로 직렬화된 상태를 가지므로 턴제 게임의 동시성 문제가 애초에 생기지 않는다.
+무엇보다 **순수 룰 엔진(`src/engine/engine.js`)을 DO 안에서 그대로 돌릴 수 있다** — 규칙을 두 번 쓰지 않는다.
+
+그 결과 GDD 6-6 이 M4 로 미뤄뒀던 **서버 권위 판정을 처음부터 얻는다**:
+
+| 취약점 | 클라이언트 판정(원래 계획) | Durable Object |
+|---|---|---|
+| 상대 카드 열람 | 보안 규칙으로 차단 | **애초에 클라이언트로 보내지 않는다** |
+| 코인 없이 거짓말 | 변조 가능 — M4 로 유예 | **서버가 진실값을 계산** |
+| 지목 판정 조작 | 변조 가능 — M4 로 유예 | **서버가 판정** |
+
+★ D6 은 서버에서도 그대로 지킨다. 코인을 쓴 답변의 진실값은 **계산하지도 저장하지도 않는다.**
+엔진이 이미 그렇게 만들어져 있으므로 DO 는 `apply()` 를 부르기만 하면 된다.
+
+붙일 자리와 체크리스트는 [`src/net/cloudflare.js`](src/net/cloudflare.js) 에 주석으로 남겨두었다.

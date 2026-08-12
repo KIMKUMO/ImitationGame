@@ -8,9 +8,16 @@
     "validate": "node data/validate-deck.js",
     "test:engine": "node scripts/test-engine.js",
     "test": "npm run validate && npm run test:engine",
-    "start": "node scripts/serve.js"
+    "start": "node scripts/serve.js",
+    "build": "node scripts/build.js",
+    "preview": "npm run build && wrangler dev",
+    "check": "npm test && npm run build && wrangler deploy --dry-run",
+    "deploy": "npm test && npm run build && wrangler deploy"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "wrangler": "^4.121.0"
   }
 }

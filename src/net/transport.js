@@ -3,7 +3,7 @@
  *
  * UI 는 이 인터페이스만 알고, 엔진 상태가 어디서 오는지는 모른다.
  * M1 은 LocalTransport (브라우저 메모리) 하나로 돌아가고,
- * M2 에서 FirebaseTransport 를 같은 인터페이스로 끼워 넣으면 UI 는 그대로 둔다.
+ * M2 에서 CloudflareTransport 를 같은 인터페이스로 끼워 넣으면 UI 는 그대로 둔다.
  *
  *   interface Transport {
  *     get state(): GameState | null
