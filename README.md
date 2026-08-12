@@ -2,7 +2,8 @@
 
 > 술집에 모인 스파이 후보생들이 서로에게 예/아니오 질문을 던져, 상대가 누구인지 먼저 알아맞히는 심리 추리 대결
 
-**배포: Cloudflare Workers (Static Assets) · `npm run deploy`**
+**배포: Cloudflare Workers (Static Assets)** — 이 브랜치에 push 하면 GitHub Actions 가 자동 배포한다
+([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)).
 
 기획: [`GDD.md`](GDD.md) · 덱 검증 리포트: [`DECK.md`](DECK.md)
 
@@ -177,22 +178,38 @@ GDD 10장의 미결 사항 중, **이 빌드로 확인해야 할 것**들이다.
 
 정적 자산 전용 Worker 다. Worker 스크립트가 없으므로 정적 요청은 자산 시스템이 바로 처리한다.
 
+### 자동 배포 (GitHub Actions)
+
+이 브랜치에 push 하면 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 이
+`npm ci → npm test → npm run build → wrangler deploy` 순으로 돈다.
+**덱 검증(C1~C5)이나 엔진 테스트가 하나라도 실패하면 배포하지 않는다.**
+
+저장소 **Settings → Secrets and variables → Actions** 에 아래 두 개가 있어야 한다
+([Cloudflare 공식 안내](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)와 이름이 동일하다):
+
+| Secret | 값 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Edit Cloudflare Workers 권한을 가진 API 토큰 |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 계정 ID |
+
+### 로컬에서 수동 배포
+
 ```bash
 npm run check    # 테스트 + 빌드 + 드라이런 — 배포 전 점검
 npm run deploy   # 실제 배포
 ```
 
-**최초 1회 인증이 필요하다.** 둘 중 하나를 쓰면 된다.
+로컬에서 돌리려면 최초 1회 인증이 필요하다. 둘 중 하나를 쓰면 된다.
 
 ```bash
 npx wrangler login                  # 브라우저 OAuth (로컬 개발 머신)
-# 또는 CI·헤드리스 환경
-export CLOUDFLARE_API_TOKEN=...     # Workers Scripts:Edit 권한 토큰
+# 또는 CI·헤드리스 환경 — 위 Actions Secrets 와 같은 값
+export CLOUDFLARE_API_TOKEN=...
 export CLOUDFLARE_ACCOUNT_ID=...
 ```
 
 `compatibility_date` 는 wrangler 에 들어 있는 workerd 가 지원하는 최신 날짜에 맞춰야 한다.
-더 뒤로 잡으면 `wrangler dev` 가 런타임을 띄우지 못한다.
+더 뒤로 잡으면 `wrangler dev`/배포가 런타임을 띄우지 못한다.
 
 ---
 
