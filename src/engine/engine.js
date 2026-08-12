@@ -38,11 +38,20 @@ export const playerCard = (s, id) => cardById(s.players[id].cardId);
 /** 선공 = 좌석 0 */
 export const isFirstSeat = (s, id) => s.order[0] === id;
 
-/** 지목 실패로 실제 공개된 토큰 목록 (슬롯 인덱스 → 토큰) */
+/**
+ * 지목 실패로 실제 공개된 토큰 목록 (슬롯 인덱스 → 토큰)
+ *
+ * 온라인 대전에서는 상대의 cardId 가 클라이언트로 내려오지 않으므로 슬롯을 토큰으로
+ * 바꿀 수 없다. 그래서 서버가 걸러 보낸 뷰에는 revealedTokens 가 미리 담겨 있고,
+ * 그 값이 있으면 그대로 쓴다 (M2 · src/worker/room.js 의 viewFor).
+ */
 export function revealedTokensOf(s, id) {
+  const p = s.players[id];
+  if (!p) return [];
+  if (Array.isArray(p.revealedTokens)) return p.revealedTokens;
   const card = playerCard(s, id);
   if (!card) return [];
-  return s.players[id].revealedSlots.map((i) => card.tokens[i]);
+  return p.revealedSlots.map((i) => card.tokens[i]);
 }
 
 /** 무작위 서로 다른 카드 배분. rng 를 주입받아 테스트에서 고정할 수 있다. */

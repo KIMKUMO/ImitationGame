@@ -13,7 +13,11 @@ import { dirname, join, relative, resolve } from 'node:path';
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 const OUT = join(ROOT, 'dist');
 
-/** 브라우저가 실제로 요청하는 것들 */
+/**
+ * 브라우저가 실제로 요청하는 것들.
+ * src/worker/ 는 서버(Durable Object)에서만 도므로 여기 넣지 않는다 —
+ * wrangler 가 소스에서 직접 번들한다.
+ */
 const INCLUDE = [
   'index.html',
   'styles',
@@ -21,7 +25,7 @@ const INCLUDE = [
   'src/ui',
   'src/engine/engine.js',
   'src/engine/bot.js',
-  'src/net/transport.js',
+  'src/net',
   'data/deck.js',
 ];
 

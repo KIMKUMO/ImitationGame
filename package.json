@@ -7,6 +7,7 @@
   "scripts": {
     "validate": "node data/validate-deck.js",
     "test:engine": "node scripts/test-engine.js",
+    "test:online": "node scripts/test-online.js",
     "test": "npm run validate && npm run test:engine",
     "start": "node scripts/serve.js",
     "build": "node scripts/build.js",

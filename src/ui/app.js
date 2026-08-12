@@ -7,6 +7,7 @@
 
 import { QUESTIONS, cutPointOf } from '../../data/deck.js';
 import { LocalTransport } from '../net/transport.js';
+import { CloudflareTransport } from '../net/cloudflare.js';
 import {
   actorOf, currentPlayerId, dealCards, opponentIdOf, isGameOver,
 } from '../engine/engine.js';
@@ -28,7 +29,11 @@ const DEFAULT_FORM = {
 };
 
 export function createApp(root) {
-  const transport = new LocalTransport();
+  const local = new LocalTransport();
+  /** 지금 쓰고 있는 전송 계층. 온라인이면 CloudflareTransport 로 바뀐다. */
+  let net = local;
+  let online = null;
+  let unsubscribe = null;
 
   const prefs = loadPrefs();
   const ui = {
@@ -43,9 +48,13 @@ export function createApp(root) {
     form: { ...DEFAULT_FORM },
     settings: { splitHint: true, reduceMotion: false, ...(prefs.settings ?? {}) },
     notes: {},
+    online: { busy: null, codeInput: '', error: null, room: null, connection: null },
   };
 
+  const isOnline = () => ui.mode === 'online' && online !== null;
+
   let lastPhase = null;
+  let lastRoomSeq = null;
   let botTimer = null;
   let revealTimer = null;
   let botQueue = [];
@@ -53,8 +62,22 @@ export function createApp(root) {
   // ── 렌더 ────────────────────────────────────────────────────────────
 
   function render() {
-    const state = transport.state;
+    const state = net.state;
     document.body.classList.toggle('reduce-motion', ui.settings.reduceMotion);
+
+    // ── 온라인: 방에 들어와 있지만 아직 게임 전이면 대기실 ────────────
+    if (isOnline()) {
+      const room = ui.online.room;
+      if (!room) {
+        root.innerHTML = V.renderWaitingFor('방에 연결하는 중입니다…');
+        return;
+      }
+      if (!state) {
+        root.innerHTML = V.renderWaitingRoom(ui, room, ui.viewerId, ui.online.connection)
+          + (ui.overlay === 'rules' ? V.renderRules(ui) : '');
+        return;
+      }
+    }
 
     if (!state) {
       root.innerHTML = V.renderLobby(ui) + (ui.overlay === 'rules' ? V.renderRules(ui) : '');
@@ -70,6 +93,12 @@ export function createApp(root) {
         root.innerHTML = V.renderHandoff(state, expected);
         return;
       }
+    }
+
+    // 온라인: 내 카드 확인이 끝났는데 상대가 아직이면 기다린다
+    if (isOnline() && state.phase === 'DEALING' && state.players[ui.viewerId]?.ackedCard) {
+      root.innerHTML = V.renderWaitingFor('상대가 카드를 확인하는 중입니다…');
+      return;
     }
 
     syncAutoApply(ui.notes, state, ui.viewerId);
@@ -110,6 +139,12 @@ export function createApp(root) {
   }
 
   function resolveViewer(state) {
+    if (isOnline()) {
+      // 온라인에서는 서버가 정해 준 내 자리가 곧 시점이다. 가림막은 필요 없다 —
+      // 애초에 상대 카드가 이 브라우저로 내려오지 않는다.
+      ui.viewerId = online.playerId;
+      return;
+    }
     if (ui.mode === 'solo') {
       ui.viewerId = ui.humanId;
       return;
@@ -131,9 +166,15 @@ export function createApp(root) {
   // ── 액션 ────────────────────────────────────────────────────────────
 
   async function dispatch(action) {
-    const before = transport.state?.phase;
-    await transport.dispatch(action);
-    const state = transport.state;
+    // 온라인은 서버가 판정한다. 결과는 sync 메시지로 돌아오므로 여기서 기다리지 않는다.
+    if (isOnline()) {
+      await net.dispatch(action);
+      return;
+    }
+
+    const before = net.state?.phase;
+    await net.dispatch(action);
+    const state = net.state;
 
     if (state.phase !== before) onPhaseEnter(state.phase, before);
 
@@ -142,8 +183,7 @@ export function createApp(root) {
     scheduleBot();
   }
 
-  function onPhaseEnter(phase, from) {
-    lastPhase = from;
+  function onPhaseEnter(phase) {
     switch (phase) {
       case 'QUESTION_BUILD':
         ui.form.qGroup = '키';
@@ -164,11 +204,80 @@ export function createApp(root) {
       default:
         break;
     }
-    ui.flashSeq = phase === 'REVEAL' ? (transport.state.log.at(-1)?.seq ?? null) : null;
+    ui.flashSeq = phase === 'REVEAL' ? (net.state?.log.at(-1)?.seq ?? null) : null;
     // 핫시트: 다음 행동 주체가 바뀌면 다시 기기를 넘겨야 한다
     if (ui.mode === 'hotseat') {
-      const expected = actorOf(transport.state);
+      const expected = actorOf(net.state);
       if (expected && expected !== ui.viewerId) ui.overlay = null;
+    }
+  }
+
+  // ── 온라인 — 서버가 밀어 준 상태 반영 ───────────────────────────────
+
+  function onRemoteSync() {
+    ui.online.room = online.room;
+    ui.online.connection = online.status;
+    if (online.error) ui.online.error = online.error;
+
+    // 게임이 시작되기 전에도 내가 누구인지는 정해져 있어야 한다.
+    // 대기실에서 방장 여부를 판단하는 데 쓴다.
+    if (online.playerId) ui.viewerId = online.playerId;
+
+    const state = online.state;
+
+    // 새 판이 시작되면 추리 노트를 새로 연다 (방의 seq 가 판마다 올라간다)
+    const seq = online.room?.seq ?? null;
+    if (state && seq !== lastRoomSeq) {
+      lastRoomSeq = seq;
+      ui.notes = createNotes(state.order);
+      ui.viewerId = online.playerId;
+      ui.overlay = null;
+      ui.form = { ...DEFAULT_FORM };
+      lastPhase = null;
+    }
+
+    if (state && state.phase !== lastPhase) {
+      lastPhase = state.phase;
+      onPhaseEnter(state.phase);
+    }
+
+    render();
+  }
+
+  // ── 온라인 — 방 만들기 · 입장 · 나가기 ──────────────────────────────
+
+  function attachOnline() {
+    online = new CloudflareTransport();
+    net = online;
+    unsubscribe?.();
+    unsubscribe = online.subscribe(onRemoteSync);
+  }
+
+  function detachOnline() {
+    unsubscribe?.();
+    unsubscribe = null;
+    online?.close();
+    online = null;
+    net = local;
+    lastRoomSeq = null;
+    lastPhase = null;
+    ui.online = { busy: null, codeInput: '', error: null, room: null, connection: null };
+  }
+
+  async function withRoom(kind, fn) {
+    ui.online.busy = kind;
+    ui.online.error = null;
+    render();
+    try {
+      attachOnline();
+      await fn();
+      savePrefs();
+    } catch (err) {
+      detachOnline();
+      ui.online.error = err.message ?? '연결에 실패했습니다';
+    } finally {
+      ui.online.busy = null;
+      render();
     }
   }
 
@@ -176,7 +285,7 @@ export function createApp(root) {
 
   function scheduleReveal() {
     clearTimeout(revealTimer);
-    const state = transport.state;
+    const state = net.state;
     if (!state || state.phase !== 'REVEAL') return;
     revealTimer = setTimeout(() => { dispatch({ type: 'CONTINUE' }); }, ui.settings.reduceMotion ? 350 : 1500);
   }
@@ -185,7 +294,7 @@ export function createApp(root) {
 
   function scheduleBot() {
     clearTimeout(botTimer);
-    const state = transport.state;
+    const state = net.state;
     if (!state || isGameOver(state) || state.phase === 'REVEAL') return;
     const actor = actorOf(state);
     if (!actor || state.players[actor].kind !== 'bot') return;
@@ -193,7 +302,7 @@ export function createApp(root) {
   }
 
   function runBotStep() {
-    const state = transport.state;
+    const state = net.state;
     if (!state || isGameOver(state)) return;
     const actor = actorOf(state);
     if (!actor || state.players[actor].kind !== 'bot') return;
@@ -241,10 +350,10 @@ export function createApp(root) {
     ui.form = { ...DEFAULT_FORM };
     botQueue = [];
 
-    await transport.start({ players, cards, firstIndex: 0 });
+    await local.start({ players, cards, firstIndex: 0 });
 
     // 봇은 카드 확인을 즉시 끝낸다 (사람의 배분 화면이 가려지지 않도록)
-    if (other.kind === 'bot') await transport.dispatch({ type: 'ACK_CARD', playerId: other.id });
+    if (other.kind === 'bot') await local.dispatch({ type: 'ACK_CARD', playerId: other.id });
 
     savePrefs();
     render();
@@ -255,7 +364,8 @@ export function createApp(root) {
     clearTimeout(botTimer);
     clearTimeout(revealTimer);
     botQueue = [];
-    transport.reset();
+    detachOnline();
+    local.reset();
     ui.viewerId = null;
     ui.overlay = null;
     render();
@@ -271,10 +381,11 @@ export function createApp(root) {
     if (stop && !stop.contains(el)) return;
 
     const act = el.dataset.act;
-    const state = transport.state;
+    const state = net.state;
 
     switch (act) {
       case 'set-mode':
+        if (ui.mode !== el.dataset.mode) detachOnline();
         ui.mode = el.dataset.mode;
         savePrefs();
         render();
@@ -283,6 +394,33 @@ export function createApp(root) {
       case 'start':
         startGame();
         break;
+
+      // ── 온라인 ──────────────────────────────────────────────────────
+      case 'room-create':
+        withRoom('create', () => online.createRoom(ui.nick));
+        break;
+      case 'room-join':
+        withRoom('join', () => online.joinRoom(ui.online.codeInput, ui.nick));
+        break;
+      case 'room-ready':
+        ui.online.error = null;
+        online?.setReady(el.dataset.ready === 'on');
+        break;
+      case 'room-start':
+        ui.online.error = null;
+        online?.startGame();
+        break;
+      case 'room-leave':
+        toLobby();
+        break;
+      case 'copy-code': {
+        const code = el.dataset.code ?? '';
+        navigator.clipboard?.writeText(code).then(
+          () => { el.textContent = '복사됨'; },
+          () => { el.textContent = code; },
+        );
+        break;
+      }
 
       case 'rules-open':
         ui.overlay = 'rules';
@@ -429,7 +567,8 @@ export function createApp(root) {
         break;
 
       case 'again':
-        startGame();
+        if (isOnline()) { ui.online.error = null; online.again(); }
+        else startGame();
         break;
       case 'to-lobby':
         toLobby();
@@ -448,6 +587,15 @@ export function createApp(root) {
 
     if (field === 'nick') { ui.nick = value; savePrefs(); return; }
     if (field === 'nick2') { ui.nick2 = value; savePrefs(); return; }
+    if (field === 'roomCode') {
+      // 사람이 부른 코드를 관대하게 받는다 (소문자·공백·하이픈)
+      const code = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
+      ui.online.codeInput = code;
+      if (event.target.value !== code) event.target.value = code;
+      const btn = root.querySelector('[data-act="room-join"]');
+      if (btn) btn.disabled = code.length < 4;
+      return;
+    }
     if (field === 'coinLine') {
       ui.form.coinLine = value;
       const counter = root.querySelector('#line-count');

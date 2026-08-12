@@ -54,6 +54,27 @@ export function dossier(card, { compact = false, label = '기밀 · 인사기록
 // ── 화면 1. 타이틀 / 로비 ─────────────────────────────────────────────
 
 export function renderLobby(ui) {
+  const online = ui.online;
+  const busy = online.busy;
+
+  const onlineControls = `
+    <div class="online-box">
+      <button class="btn btn-primary btn-wide" data-act="room-create" ${busy ? 'disabled' : ''}>
+        ${busy && online.busy === 'create' ? '방을 여는 중…' : '방 만 들 기'}
+      </button>
+      <div class="or">또 는</div>
+      <div class="join-row">
+        <input type="text" data-field="roomCode" class="code-input" maxlength="4"
+          placeholder="ABCD" value="${esc(online.codeInput)}"
+          autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text">
+        <button class="btn" data-act="room-join" ${busy || online.codeInput.length < 4 ? 'disabled' : ''}>
+          ${busy && online.busy === 'join' ? '입장 중…' : '입장'}
+        </button>
+      </div>
+      <p class="join-hint">호스트가 방을 만들면 4자리 코드가 나옵니다. 그 코드를 여기 넣으세요.</p>
+      ${online.error ? `<p class="online-error">⚠ ${esc(online.error)}</p>` : ''}
+    </div>`;
+
   return `
     <div class="screen screen-lobby">
       <div class="lobby-card">
@@ -72,6 +93,10 @@ export function renderLobby(ui) {
         </label>` : ''}
 
         <div class="mode-list">
+          <button class="mode${ui.mode === 'online' ? ' mode-on' : ''}" data-act="set-mode" data-mode="online">
+            <span class="mode-name">온라인 대전</span>
+            <span class="mode-desc">방 코드로 다른 기기의 상대와 겨룬다</span>
+          </button>
           <button class="mode${ui.mode === 'solo' ? ' mode-on' : ''}" data-act="set-mode" data-mode="solo">
             <span class="mode-name">연습 · 봇과 대전</span>
             <span class="mode-desc">MAGPIE 를 상대로 혼자 규칙을 익힌다</span>
@@ -80,16 +105,89 @@ export function renderLobby(ui) {
             <span class="mode-name">2인 · 한 기기 번갈아</span>
             <span class="mode-desc">기기를 넘길 때마다 화면이 가려진다</span>
           </button>
-          <button class="mode mode-off" disabled>
-            <span class="mode-name">온라인 대전 <em>준비 중</em></span>
-            <span class="mode-desc">Cloudflare Durable Objects — M2 에서 열린다</span>
-          </button>
         </div>
 
-        <button class="btn btn-primary btn-wide" data-act="start">문 을 밀 고 들 어 선 다</button>
+        ${ui.mode === 'online'
+          ? onlineControls
+          : '<button class="btn btn-primary btn-wide" data-act="start">문 을 밀 고 들 어 선 다</button>'}
+
         <button class="btn btn-ghost btn-wide" data-act="rules-open">규칙 보기</button>
       </div>
       <p class="footnote">1943년 · 연합국 스파이 교육 최종 시험</p>
+    </div>`;
+}
+
+// ── 화면 2. 대기실 (온라인) ───────────────────────────────────────────
+
+export function renderWaitingRoom(ui, room, myId, connection) {
+  const me = room.players.find((p) => p.id === myId);
+  const isHost = room.hostId === myId;
+  const everyoneReady = room.players.length >= 2 && room.players.every((p) => p.ready);
+
+  // 4인 확장 대비로 좌석 4개를 미리 그린다 (GDD 화면 2)
+  const seats = Array.from({ length: 4 }, (_, i) => {
+    const p = room.players[i];
+    if (!p) return '<li class="seat seat-empty"><span class="seat-no">─</span> 빈 자리</li>';
+    return `
+      <li class="seat${p.id === myId ? ' seat-me' : ''}">
+        <span class="seat-no">${i + 1}</span>
+        <span class="seat-nick">${esc(p.nick)}</span>
+        ${p.id === room.hostId ? '<span class="seat-tag">방장</span>' : ''}
+        ${p.connected ? '' : '<span class="seat-off">연결 끊김</span>'}
+        <span class="seat-ready${p.ready ? ' seat-ready-on' : ''}">${p.ready ? '✔ 준비' : '· 대기'}</span>
+      </li>`;
+  }).join('');
+
+  return `
+    <div class="screen screen-waiting">
+      <div class="waiting-card">
+        <div class="code-head">
+          <span class="code-label">방 코드</span>
+          <strong class="code-value" id="room-code">${esc(room.code)}</strong>
+          <button class="btn btn-ghost btn-small" data-act="copy-code" data-code="${esc(room.code)}">복사</button>
+        </div>
+        <p class="code-hint">이 코드를 상대에게 알려주세요.</p>
+
+        <ul class="seats">${seats}</ul>
+
+        <div class="rules-brief">
+          <h4>룰 요약</h4>
+          <ul>
+            <li>캐릭터 15장 중 1장을 배정받습니다</li>
+            <li>예/아니오 질문으로 상대를 추리하세요</li>
+            <li>거짓말 코인 2개 — 답을 자유롭게 고릅니다</li>
+            <li>지목 실패 시 내 토큰 2개가 공개됩니다. 3회 실패하면 패배합니다</li>
+          </ul>
+        </div>
+
+        ${connection && connection !== 'open'
+          ? `<p class="online-error">${connection === 'reconnecting' ? '연결이 끊겨 다시 연결하는 중입니다…' : '연결 중…'}</p>`
+          : ''}
+        ${ui.online.error ? `<p class="online-error">⚠ ${esc(ui.online.error)}</p>` : ''}
+
+        <div class="waiting-actions">
+          <button class="btn${me?.ready ? '' : ' btn-primary'}" data-act="room-ready" data-ready="${me?.ready ? 'off' : 'on'}">
+            ${me?.ready ? '준비 취소' : '준 비 완 료'}
+          </button>
+          ${isHost
+            ? `<button class="btn btn-primary" data-act="room-start" ${everyoneReady ? '' : 'disabled'}>게임 시작</button>`
+            : '<span class="waiting-note">방장이 시작하기를 기다립니다</span>'}
+        </div>
+
+        <button class="btn btn-ghost btn-wide" data-act="room-leave">나가기</button>
+      </div>
+    </div>`;
+}
+
+/** 상대를 기다리는 동안 (온라인 전용) */
+export function renderWaitingFor(message) {
+  return `
+    <div class="screen screen-handoff">
+      <div class="handoff">
+        <p class="handoff-eyebrow">잠시만요</p>
+        <h2 class="handoff-name">…</h2>
+        <p class="handoff-desc">${esc(message)}</p>
+      </div>
     </div>`;
 }
 
@@ -755,10 +853,20 @@ export function renderResult(state, ui) {
       </section>
 
       <footer class="result-foot">
-        <button class="btn btn-primary" data-act="again">한 판 더</button>
+        ${againButton(ui)}
         <button class="btn btn-ghost" data-act="to-lobby">로비로</button>
       </footer>
     </div>`;
+}
+
+/** 온라인에서는 방장만 다시 시작할 수 있다 */
+function againButton(ui) {
+  if (ui.mode !== 'online') return '<button class="btn btn-primary" data-act="again">한 판 더</button>';
+  const room = ui.online.room;
+  if (!room) return '';
+  return room.hostId === ui.viewerId
+    ? '<button class="btn btn-primary" data-act="again">한 판 더</button>'
+    : '<span class="waiting-note">방장이 다시 시작하기를 기다립니다</span>';
 }
 
 // ── 설정 ──────────────────────────────────────────────────────────────

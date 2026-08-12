@@ -9,40 +9,38 @@
   // 이보다 뒤로 잡으면 `wrangler dev` 가 런타임을 띄우지 못한다.
   "compatibility_date": "2026-08-11",
 
-  // ── 정적 자산만 배포한다 (Worker 스크립트 없음) ──────────────────────
+  // ── Worker — /api/* 만 처리한다 ──────────────────────────────────────
   //
-  // 이 게임은 M1 기준으로 서버가 필요 없다. 번들러도 없어서 dist/ 에 모은 파일이
-  // 그대로 올라간다 (npm run build).
+  // 정적 자산에 해당하는 요청은 이 Worker 를 거치지 않고 자산 시스템이 바로 응답한다
+  // (run_worker_first 를 켜지 않는 한). 즉 게임 화면을 여는 비용은 정적 사이트와 같다.
+  "main": "src/worker/index.js",
+
+  // ── 정적 자산 ────────────────────────────────────────────────────────
   //
-  // Worker 스크립트가 없으면 자산에 없는 경로는 404 로 응답한다. 이 앱은
-  // 클라이언트 라우팅이 없으므로(모든 화면 전환이 한 페이지 안에서 일어난다)
-  // 그 동작이 맞다 — SPA fallback 을 켜면 오탈자 URL 까지 200 으로 응답하게 된다.
+  // 번들러가 없어서 dist/ 에 모은 파일이 그대로 올라간다 (npm run build).
+  //
+  // 이 앱은 클라이언트 라우팅이 없으므로(모든 화면 전환이 한 페이지 안에서 일어난다)
+  // SPA fallback 을 켜지 않는다 — 켜면 오탈자 URL 까지 200 으로 응답하게 된다.
+  // 자산에 없는 경로는 Worker 가 받아 /api/* 가 아니면 404 를 돌려준다.
   "assets": {
     "directory": "./dist",
+    "binding": "ASSETS",
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "none"
   },
 
+  // ── 온라인 대전 — 방 하나 = DO 인스턴스 하나 ─────────────────────────
+  //
+  // 룰 엔진을 DO 안에서 그대로 돌린다. 상대 카드는 클라이언트로 내려가지 않고,
+  // 진실값·지목 판정을 전부 서버가 계산한다 (src/worker/room.js).
+  "durable_objects": {
+    "bindings": [{ "name": "ROOM", "class_name": "GameRoom" }]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["GameRoom"] }
+  ],
+
   "observability": {
     "enabled": true
   }
-
-  // ── M2. 온라인 대전을 붙일 때 ────────────────────────────────────────
-  //
-  // 방 하나 = Durable Object 인스턴스 하나로 두고 WebSocket 으로 상태를 밀어 준다.
-  // 순수 룰 엔진(src/engine/engine.js)을 DO 안에서 그대로 돌릴 수 있으므로,
-  // 상대 카드가 클라이언트로 내려가지 않는 권위 판정이 처음부터 성립한다.
-  //
-  // 아래 두 항목을 추가하면 된다 (자세한 계획은 src/net/cloudflare.js):
-  //
-  //   "main": "src/worker/index.js",
-  //   "durable_objects": {
-  //     "bindings": [{ "name": "ROOM", "class_name": "GameRoom" }]
-  //   },
-  //   "migrations": [
-  //     { "tag": "v1", "new_sqlite_classes": ["GameRoom"] }
-  //   ]
-  //
-  // main 을 추가해도 정적 자산 요청은 Worker 를 거치지 않는다
-  // (run_worker_first 를 켜지 않는 한). 즉 지금 구성의 비용/성능은 그대로다.
 }
